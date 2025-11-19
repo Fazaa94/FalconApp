@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState ,useEffect} from 'react';
 import {
   View,
   Text,
@@ -9,133 +9,76 @@ import {
   ScrollView,
   StyleSheet,
   Alert,
-  Image,
-  StatusBar
+  Image
 } from 'react-native';
-import { styles, COLORS, FONTS } from './theme';
-import realm from '../db/database';
+import { styles, COLORS, FONTS } from './theme'; // Adjust import path
+import realm from '../db/database'; // Adjust path to your Realm instance
 
-function LoginScreen({ navigation }) {
+export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [appVersion] = useState('2.0.0');
-  const [buildInfo] = useState('FalconRace ESP32 Edition');
 
-  const handleLogin = async () => {
-    if (!email || !password) {
-      Alert.alert('Error', 'Please fill in all fields');
-      return;
-    }
+const handleLogin = async () => {
+  if (!email || !password) {
+    Alert.alert('Error', 'Please fill in all fields');
+    return;
+  }
 
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      Alert.alert('Error', 'Please enter a valid email address');
-      return;
-    }
+  setIsLoading(true);
 
-    // Basic password validation
-    if (password.length < 3) {
-      Alert.alert('Error', 'Password must be at least 3 characters');
-      return;
-    }
+  setTimeout(() => {
+    setIsLoading(false);
 
-    setIsLoading(true);
-
-    // Simulate authentication process
-    setTimeout(() => {
-      setIsLoading(false);
-
-      // Replace with your real authentication logic
-      if (email && password) {
-        try {
-          realm.write(() => {
-            // Clear old sessions
-            let existing = realm.objects('UserSession');
-            realm.delete(existing);
-
-            // Save new session with additional info
-            realm.create('UserSession', {
-              id: 1,
-              email: email.toLowerCase().trim(),
-              isLoggedIn: true,
-              loginTime: new Date(),
-              appVersion: appVersion
-            });
-
-            // Log login event for analytics
-            realm.create('AppEvent', {
-              id: Date.now().toString(),
-              type: 'user_login',
-              timestamp: new Date(),
-              details: `User ${email} logged in`,
-              synced: false
-            });
-          });
-
-          Alert.alert(
-            'Welcome to FalconRace!', 
-            'Successfully logged in\n\nESP32 Master Control Ready\nLoRa Mesh Network Available',
-            [{ text: 'Continue', onPress: () => navigateToApp() }]
-          );
-        } catch (err) {
-          console.log('Realm write error:', err);
-          Alert.alert('Error', 'Failed to save session data');
-        }
-      } else {
-        Alert.alert('Error', 'Invalid credentials');
-      }
-    }, 1500);
-  };
-
-  const navigateToApp = () => {
-    navigation.reset({
-      index: 0,
-      routes: [{ name: 'AppNavigator' }],
-    });
-  };
-
-  useEffect(() => {
-    const checkSession = () => {
+    // Replace with your real authentication logic
+    if (email && password) {
       try {
-        const session = realm.objects('UserSession').filtered('isLoggedIn == true');
-        if (session.length > 0) {
-          console.log('Found active session for:', session[0].email);
-          navigateToApp();
-        }
-      } catch (error) {
-        console.log('Session check error:', error);
+        realm.write(() => {
+          // Clear old sessions
+          let existing = realm.objects('UserSession');
+          realm.delete(existing);
+
+          // Save new session
+          realm.create('UserSession', {
+            id: 1,
+            email: email,
+            isLoggedIn: true,
+          });
+        });
+
+        Alert.alert('Success', 'Welcome back!');
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'AppNavigator' }],
+        });
+      } catch (err) {
+        console.log('Realm write error:', err);
       }
-    };
-    
-    checkSession();
-  }, []);
+    } else {
+      Alert.alert('Error', 'Invalid credentials');
+    }
+  }, 1500);
+};
+
+
+useEffect(() => {
+  const checkSession = () => {
+    const session = realm.objects('UserSession').filtered('isLoggedIn == true');
+    if (session.length > 0) {
+      navigation.replace('AppNavigator');
+    }
+  };
+  checkSession();
+}, []);
+
 
   const handleForgotPassword = () => {
-    Alert.alert(
-      'Account Recovery', 
-      'Please contact system administrator for password reset.\n\nSupport: admin@falconrace.com',
-      [{ text: 'OK' }]
-    );
+    Alert.alert('Forgot Password', 'Password reset feature coming soon!');
   };
 
-  const handleDemoLogin = () => {
-    setEmail('trainer@falconrace.com');
-    setPassword('demo123');
-    Alert.alert(
-      'Demo Credentials Loaded',
-      'Demo credentials have been pre-filled. Tap LOGIN to continue.',
-      [{ text: 'OK' }]
-    );
-  };
-
-  const handleSystemInfo = () => {
-    Alert.alert(
-      'FalconRace System Info',
-      `Version: ${appVersion}\nBuild: ${buildInfo}\n\nHardware Support:\n• ESP32 T-Beam Master\n• LoRa RFM95 433MHz\n• OpenMX Camera Module\n• GPS NEO-6M/7M\n• BLE Connectivity\n\nDatabase: Realm Local Storage`,
-      [{ text: 'OK' }]
-    );
+  const handleSignUp = () => {
+    Alert.alert('Sign Up', 'Registration feature coming soon!');
+    // navigation.navigate('SignUp');
   };
 
   return (
@@ -143,47 +86,40 @@ function LoginScreen({ navigation }) {
       style={styles.screen}
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <StatusBar backgroundColor={COLORS.desertSand} barStyle="dark-content" />
       <ScrollView 
         contentContainerStyle={loginStyles.scrollContent}
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
       >
         {/* Header Section */}
-        <View style={loginStyles.header}>
-          <View style={loginStyles.logoContainer}>
-            <Image
-              source={require('../assets/caninelogo.png')}
-              style={loginStyles.logoImage}
-              resizeMode="contain"
-            />
-            <View style={loginStyles.logoTextContainer}>
-              <Text style={loginStyles.logoText}>FalconRace</Text>
-              <Text style={loginStyles.logoSubtitle}>ESP32 Control System</Text>
-            </View>
-          </View>
-          <Text style={loginStyles.subtitle}>Professional Falcon Racing & Training Platform</Text>
-        </View>
+       {/* Header Section */}
+<View style={loginStyles.header}>
+  <View style={loginStyles.logoContainer}>
+    <Image
+      source={require('../assets/caninelogo.png')}
+      style={loginStyles.logoImage}
+      resizeMode="contain"
+    />
+    <Text style={loginStyles.logoText}>Falcon Tracker</Text>
+  </View>
+  <Text style={loginStyles.subtitle}>Track your falcon's performance</Text>
+</View>
 
         {/* Login Form */}
         <View style={loginStyles.formContainer}>
-          <Text style={loginStyles.formTitle}>Master Control Login</Text>
-          <Text style={loginStyles.formSubtitle}>Access ESP32 Falcon Tracking System</Text>
+          <Text style={loginStyles.formTitle}>Welcome Back</Text>
           
           {/* Email Input */}
           <View style={loginStyles.inputContainer}>
-            <Text style={loginStyles.inputLabel}>Email Address</Text>
+            <Text style={loginStyles.inputLabel}>Email</Text>
             <TextInput
               style={loginStyles.input}
-              placeholder="Enter your registered email"
+              placeholder="Enter your email"
               placeholderTextColor={COLORS.charcoal + '80'}
               value={email}
               onChangeText={setEmail}
               keyboardType="email-address"
               autoCapitalize="none"
               autoComplete="email"
-              autoCorrect={false}
-              editable={!isLoading}
             />
           </View>
 
@@ -198,74 +134,51 @@ function LoginScreen({ navigation }) {
               onChangeText={setPassword}
               secureTextEntry
               autoCapitalize="none"
-              autoComplete="password"
-              autoCorrect={false}
-              editable={!isLoading}
-              onSubmitEditing={handleLogin}
             />
           </View>
 
-          {/* Action Buttons */}
-          <View style={loginStyles.actionButtons}>
-            <TouchableOpacity 
-              style={loginStyles.demoButton}
-              onPress={handleDemoLogin}
-              disabled={isLoading}
-            >
-              <Text style={loginStyles.demoButtonText}>LOAD DEMO CREDENTIALS</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity 
-              style={loginStyles.forgotPasswordContainer}
-              onPress={handleForgotPassword}
-              disabled={isLoading}
-            >
-              <Text style={loginStyles.forgotPasswordText}>Need Help Accessing?</Text>
-            </TouchableOpacity>
-          </View>
+          {/* Forgot Password */}
+          {/* <TouchableOpacity 
+            style={loginStyles.forgotPasswordContainer}
+            onPress={handleForgotPassword}
+          >
+            <Text style={loginStyles.forgotPasswordText}>Forgot Password?</Text>
+          </TouchableOpacity> */}
 
           {/* Login Button */}
           <TouchableOpacity
             style={[
               loginStyles.loginButton,
-              isLoading && loginStyles.loginButtonDisabled,
-              (!email || !password) && loginStyles.loginButtonDisabled
+              isLoading && loginStyles.loginButtonDisabled
             ]}
             onPress={handleLogin}
-            disabled={isLoading || !email || !password}
+            disabled={isLoading}
           >
-            {isLoading ? (
-              <View style={loginStyles.loadingContainer}>
-                <Text style={loginStyles.loginButtonText}>AUTHENTICATING...</Text>
-              </View>
-            ) : (
-              <Text style={loginStyles.loginButtonText}>
-                {email && password ? 'ACCESS FALCONRACE SYSTEM' : 'ENTER CREDENTIALS'}
-              </Text>
-            )}
+            <Text style={loginStyles.loginButtonText}>
+              {isLoading ? 'Logging in...' : 'Login'}
+            </Text>
           </TouchableOpacity>
 
-          {/* Quick Info */}
-          <View style={loginStyles.quickInfo}>
-            <Text style={loginStyles.quickInfoText}>
-              🦅 Real-time Falcon Tracking{'\n'}
-              📡 LoRa Mesh Network{'\n'}
-              🎯 ESP32 Master Control{'\n'}
-              📷 Motion Detection{'\n'}
-              🛰️ GPS Positioning
-            </Text>
+          {/* Divider */}
+          {/* <View style={loginStyles.dividerContainer}>
+            <View style={loginStyles.divider} />
+            <Text style={loginStyles.dividerText}>or</Text>
+            <View style={loginStyles.divider} />
           </View>
+
+          {/* Sign Up Option */}
+          {/* <View style={loginStyles.signUpContainer}>
+            <Text style={loginStyles.signUpText}>Don't have an account? </Text>
+            <TouchableOpacity onPress={handleSignUp}>
+              <Text style={loginStyles.signUpLink}>Sign Up</Text>
+            </TouchableOpacity>
+          </View> */} 
         </View>
 
         {/* Footer */}
         <View style={loginStyles.footer}>
-          <TouchableOpacity onPress={handleSystemInfo}>
-            <Text style={loginStyles.footerText}>
-              FalconRace Control System v{appVersion}
-            </Text>
-          </TouchableOpacity>
-          <Text style={loginStyles.footerSubtext}>
-            ESP32 Hardware • LoRa Connectivity • Professional Racing Platform
+          <Text style={loginStyles.footerText}>
+            Track Race, Training of your falcon companion
           </Text>
         </View>
       </ScrollView>
@@ -277,9 +190,14 @@ const loginStyles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'space-between',
-    paddingVertical: 40,
-    paddingHorizontal: 20,
-  },
+    paddingVertical: 60,
+  }
+  ,logoImage: {
+  width: 50,       // adjust size as needed
+  height: 60,
+  marginRight: 12,
+},
+
   header: {
     alignItems: 'center',
     marginBottom: 40,
@@ -287,34 +205,22 @@ const loginStyles = StyleSheet.create({
   logoContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 8,
   },
-  logoImage: {
-    width: 60,
-    height: 70,
-    marginRight: 16,
-  },
-  logoTextContainer: {
-    alignItems: 'flex-start',
+  logoIcon: {
+    fontSize: 32,
+    marginRight: 12,
   },
   logoText: {
     fontFamily: FONTS.orbitronBold,
-    fontSize: 32,
+    fontSize: 28,
     color: COLORS.charcoal,
-    marginBottom: 4,
-  },
-  logoSubtitle: {
-    fontFamily: FONTS.montserratRegular,
-    fontSize: 14,
-    color: COLORS.cobaltBlue,
-    fontWeight: '600',
   },
   subtitle: {
     fontFamily: FONTS.montserratRegular,
     fontSize: 16,
     color: COLORS.charcoal + 'CC',
     textAlign: 'center',
-    lineHeight: 22,
   },
   formContainer: {
     backgroundColor: COLORS.warmStone,
@@ -326,21 +232,14 @@ const loginStyles = StyleSheet.create({
       width: 0,
       height: 4,
     },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.1,
     shadowRadius: 12,
-    elevation: 8,
+    elevation: 5,
   },
   formTitle: {
     fontFamily: FONTS.montserratBold,
-    fontSize: 24,
+    fontSize: 22,
     color: COLORS.charcoal,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  formSubtitle: {
-    fontFamily: FONTS.montserratRegular,
-    fontSize: 14,
-    color: COLORS.charcoal + '80',
     textAlign: 'center',
     marginBottom: 24,
   },
@@ -364,28 +263,9 @@ const loginStyles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'transparent',
   },
-  actionButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  demoButton: {
-    backgroundColor: COLORS.cobaltBlue + '20',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.cobaltBlue,
-  },
-  demoButtonText: {
-    fontFamily: FONTS.montserratBold,
-    fontSize: 12,
-    color: COLORS.cobaltBlue,
-    textAlign: 'center',
-  },
   forgotPasswordContainer: {
-    paddingVertical: 8,
+    alignSelf: 'flex-end',
+    marginBottom: 24,
   },
   forgotPasswordText: {
     fontFamily: FONTS.montserratRegular,
@@ -397,44 +277,46 @@ const loginStyles = StyleSheet.create({
     borderRadius: 12,
     paddingVertical: 16,
     alignItems: 'center',
-    marginBottom: 20,
-    shadowColor: COLORS.oasisGreen,
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    marginBottom: 24,
   },
   loginButtonDisabled: {
-    backgroundColor: COLORS.offlineGray,
-    shadowOpacity: 0.1,
-    elevation: 2,
-  },
-  loadingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    opacity: 0.6,
   },
   loginButtonText: {
     fontFamily: FONTS.montserratBold,
-    fontSize: 16,
+    fontSize: 18,
     color: COLORS.desertSand,
-    fontWeight: '700',
   },
-  quickInfo: {
-    backgroundColor: COLORS.desertSand,
-    padding: 16,
-    borderRadius: 12,
-    marginTop: 8,
+  dividerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
   },
-  quickInfoText: {
+  divider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: COLORS.charcoal + '40',
+  },
+  dividerText: {
     fontFamily: FONTS.montserratRegular,
-    fontSize: 13,
+    fontSize: 14,
     color: COLORS.charcoal + '80',
-    textAlign: 'center',
-    lineHeight: 20,
+    marginHorizontal: 16,
+  },
+  signUpContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  signUpText: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 14,
+    color: COLORS.charcoal,
+  },
+  signUpLink: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 14,
+    color: COLORS.terracotta,
   },
   footer: {
     alignItems: 'center',
@@ -442,20 +324,10 @@ const loginStyles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   footerText: {
-    fontFamily: FONTS.montserratBold,
-    fontSize: 14,
-    color: COLORS.cobaltBlue,
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  footerSubtext: {
     fontFamily: FONTS.montserratRegular,
-    fontSize: 12,
-    color: COLORS.charcoal + '60',
+    fontSize: 14,
+    color: COLORS.charcoal + '80',
     textAlign: 'center',
-    lineHeight: 16,
+    lineHeight: 20,
   },
 });
-
-// ✅ ONLY ONE export default - at the very end
-export default LoginScreen;

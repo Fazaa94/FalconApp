@@ -20,7 +20,7 @@ export default function SplashScreen({ navigation }) {
         resizeMode="contain"
       />
 
-      <Text style={styles.title}>FalconRace</Text>
+      <Text style={styles.title}>Falcon Tracker</Text>
       <ActivityIndicator size="large" color={COLORS.oasisGreen} style={{ marginTop: 30 }} />
     </View>
   );

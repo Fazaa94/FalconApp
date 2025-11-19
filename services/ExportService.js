@@ -6,7 +6,7 @@ class ExportService {
   // Generate comprehensive race report
   generateRaceReport(raceResults, format = 'json') {
     const reportData = {
-      reportTitle: 'Falcon Racing Performance Report',
+      reportTitle: 'Canine Racing Performance Report',
       generatedAt: new Date().toISOString(),
       totalRaces: raceResults.length,
       reportPeriod: {
@@ -135,7 +135,7 @@ class ExportService {
   }
 
   convertToTXT(reportData) {
-    let txt = 'FALCON RACING PERFORMANCE REPORT\n';
+    let txt = 'CANINE RACING PERFORMANCE REPORT\n';
     txt += '='.repeat(50) + '\n\n';
     
     txt += `Generated: ${new Date().toLocaleString()}\n`;

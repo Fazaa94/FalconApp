@@ -46,7 +46,170 @@ export const BleProvider = ({ children }) => {
     }
   };
 
-  // Safe notification handler
+  // Unified telemetry handler mapping firmware JSON types
+  // Types: system_status, race, falcon, motion, gps, camera_status, node_msg, camera_msg
+  const handleIncomingTelemetry = (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    const type = msg.type;
+    const src = msg.src ?? msg.source ?? null;
+
+    // Add raw message record first
+    try {
+      raceContext.dispatch({ type: 'ADD_MESSAGE', payload: { raw: msg, ts: Date.now() } });
+    } catch {}
+
+    switch (type) {
+      case 'system_status': {
+        // Update global status
+        try {
+          raceContext.dispatch({
+            type: 'SET_STATUS',
+            payload: {
+              connected: true,
+              race_active: !!msg.race_active,
+              battery: msg.battery,
+              ts_received: msg.ts_iso ? Date.parse(msg.ts_iso) : Date.now(),
+              falcon_detected: false,
+            }
+          });
+        } catch {}
+        // Roster nodes
+        if (Array.isArray(msg.nodes)) {
+          msg.nodes.forEach(n => {
+            const nodeIdStr = String(n.id);
+            try {
+              raceContext.dispatch({
+                type: 'UPDATE_NODE',
+                payload: {
+                  id: nodeIdStr,
+                  lastSeen: Date.now(),
+                  cameraPresent: n.camera_alive,
+                }
+              });
+            } catch {}
+          });
+        }
+        break;
+      }
+      case 'race': {
+        if (msg.event === 'started') {
+          try {
+            raceContext.dispatch({
+              type: 'START_RACE',
+              payload: {
+                id: msg.ts_iso || String(Date.now()),
+                falcon: raceContext.state.selectedFalcon,
+                startTimeMs: msg.ts_iso ? Date.parse(msg.ts_iso) : Date.now(),
+              }
+            });
+          } catch {}
+        } else if (msg.event === 'stopped') {
+          try { raceContext.dispatch({ type: 'STOP_RACE' }); } catch {}
+        }
+        break;
+      }
+      case 'falcon': {
+        try {
+          raceContext.dispatch({
+            type: 'ADD_DETECTION',
+            payload: {
+              nodeId: src != null ? String(src) : 'master',
+              ts_iso: msg.ts_iso,
+              type: 'falcon',
+              payload: msg.payload,
+            }
+          });
+          raceContext.dispatch({ type: 'SET_STATUS', payload: { falcon_detected: true } });
+        } catch {}
+        break;
+      }
+      case 'motion': {
+        try {
+          raceContext.dispatch({
+            type: 'ADD_DETECTION',
+            payload: {
+              nodeId: src != null ? String(src) : 'master',
+              ts_iso: msg.ts_iso,
+              type: 'motion',
+              payload: msg.payload || null,
+            }
+          });
+        } catch {}
+        break;
+      }
+      case 'camera_status': {
+        if (src != null) {
+          const nodeIdStr = String(src);
+          try {
+            raceContext.dispatch({
+              type: 'UPDATE_NODE',
+              payload: {
+                id: nodeIdStr,
+                cameraPresent: msg.event === 'ready' || msg.event === 'probe_ok',
+              }
+            });
+          } catch {}
+        }
+        break;
+      }
+      case 'node_msg': {
+        if (src != null) {
+          const nodeIdStr = String(src);
+          try {
+            raceContext.dispatch({
+              type: 'UPDATE_NODE',
+              payload: {
+                id: nodeIdStr,
+                lastSeen: Date.now(),
+              }
+            });
+          } catch {}
+        }
+        try {
+          raceContext.dispatch({
+            type: 'ADD_MESSAGE',
+            payload: { ts: msg.ts_iso ? Date.parse(msg.ts_iso) : Date.now(), raw: msg }
+          });
+        } catch {}
+        break;
+      }
+      case 'gps': {
+        try {
+          raceContext.dispatch({
+            type: 'UPDATE_GPS',
+            payload: {
+              lat: msg.lat,
+              lng: msg.lng,
+              sats: msg.sats,
+              alt: msg.alt,
+              speed_kmh: msg.speed_kmh,
+              ts_iso: msg.ts_iso,
+            }
+          });
+        } catch {}
+        break;
+      }
+      case 'camera_msg': {
+        try {
+          raceContext.dispatch({
+            type: 'ADD_DETECTION',
+            payload: {
+              nodeId: src != null ? String(src) : 'master',
+              ts_iso: msg.ts_iso,
+              type: 'camera',
+              event: msg.event,
+            }
+          });
+        } catch {}
+        break;
+      }
+      default:
+        // Unknown type, already stored in messages
+        break;
+    }
+  };
+
+  // Safe notification handler (now using unified telemetry parser)
   const handleNotification = async (error, characteristic) => {
     try {
       if (error) {
@@ -60,182 +223,46 @@ export const BleProvider = ({ children }) => {
       }
 
       const decoded = decodeBase64(characteristic.value);
-      console.log('📨 BLE RX Chunk:', decoded);
+      console.log('═══════════════════════════════════════════════════════');
+      console.log('📨 RAW BLE DATA FROM ESP BOARD:');
+      console.log('   Chunk received:', decoded);
+      console.log('   Chunk length:', decoded.length, 'chars');
+      console.log('───────────────────────────────────────────────────────');
+      
       messageBufferRef.current += decoded;
-      console.log('📦 Buffer accumulated:', messageBufferRef.current.substring(0, 100) + '...');
-      console.log('📊 Buffer total length:', messageBufferRef.current.length, 'chars');
+      
+      console.log('📦 ACCUMULATED BUFFER:');
+      console.log('   Total length:', messageBufferRef.current.length, 'chars');
+      console.log('   First 200 chars:', messageBufferRef.current.substring(0, 200));
+      if (messageBufferRef.current.length > 200) {
+        console.log('   ... (truncated)');
+      }
+      console.log('───────────────────────────────────────────────────────');
 
       // Import parser after BleProvider is created to avoid circular dependency
       const { processStream } = require('../utils/parser');
       const messages = processStream(messageBufferRef);
 
       if (messages.length > 0) {
-        console.log(`✅ Parsed ${messages.length} complete message(s)!`);
+        console.log('✅ SUCCESSFULLY PARSED', messages.length, 'MESSAGE(S):');
+        messages.forEach((msg, idx) => {
+          console.log(`\n📋 MESSAGE #${idx + 1}:`);
+          console.log('   Full JSON:', JSON.stringify(msg, null, 2));
+        });
+      } else {
+        console.log('⏳ No complete messages yet (waiting for more data...)');
       }
+      console.log('═══════════════════════════════════════════════════════\n');
       
       messages.forEach((msg) => {
-        msg.ts_received = Date.now();
-        console.log('📦 BLE Parsed Message:', JSON.stringify(msg, null, 2));
-
-        if (raceContext) {
-          raceContext.dispatch({
-            type: 'ADD_MESSAGE',
-            payload: msg,
-          });
-
-          // Dispatch to specific handlers based on message type
-          if (msg.data && msg.data.type === 'status') {
-            raceContext.dispatch({
-              type: 'SET_STATUS',
-              payload: {
-                connected: msg.data.connected || false,
-                race_active: msg.data.race_active || false,
-                battery: msg.data.battery || 0,
-                progress_percent: msg.data.progress_percent || 0,
-                track_length_m: msg.data.track_length_m || 800,
-                detection_count: msg.data.detection_count || 0,
-                total_sensors: msg.data.total_nodes || msg.data.total_sensors || 5, // Use dynamic count
-                online_count: msg.data.online_count || 0,
-                falcon_detected: msg.data.falcon_detected || false,
-                rssi: msg.data.rssi || 0,
-                local_camera: msg.data.local_camera || false,
-                gps_status: msg.data.gps_status || 'unknown',
-                last_detection_node: msg.data.last_detection_node,
-                total_distance_m: msg.data.total_distance_m,
-                lat: msg.data.lat,
-                lng: msg.data.lng,
-                sats: msg.data.sats,
-                ts_received: msg.ts_received,
-              },
-            });
-            
-            // Handle dynamic nodes from online_nodes array
-            if (msg.data.online_nodes && Array.isArray(msg.data.online_nodes)) {
-              msg.data.online_nodes.forEach(nodeId => {
-                if (nodeId !== 1) { // Skip master node
-                  raceContext.dispatch({
-                    type: 'UPDATE_NODE',
-                    payload: {
-                      id: nodeId,
-                      name: `Sensor ${nodeId}`,
-                      lastSeen: msg.ts_received,
-                      online: true,
-                      distance: (nodeId - 1) * 160, // Default positioning: 160m apart
-                      battery: 85, // Default values since Arduino doesn't send individual stats
-                      rssi: msg.data.rssi || 0,
-                    },
-                  });
-                }
-              });
-            }
-          } else if (msg.data && msg.data.type === 'falcon_analytics') {
-            // Handle comprehensive falcon analytics
-            raceContext.dispatch({
-              type: 'UPDATE_ANALYTICS',
-              payload: {
-                detection_count: msg.data.detection_count,
-                total_sensors: msg.data.total_sensors,
-                progress_percent: msg.data.progress_percent,
-                current_sensor: msg.data.current_sensor,
-                current_node_id: msg.data.current_node_id,
-                segment_distance_m: msg.data.segment_distance_m,
-                segment_time_s: msg.data.segment_time_s,
-                segment_speed_kmh: msg.data.segment_speed_kmh,
-                total_distance_m: msg.data.total_distance_m,
-                total_time_s: msg.data.total_time_s,
-                average_speed_kmh: msg.data.average_speed_kmh,
-                track_length_m: msg.data.track_length_m,
-                race_status: msg.data.race_status,
-                detection_history: msg.data.detection_history || [],
-                ts_received: msg.ts_received,
-              },
-            });
-          } else if (msg.data && msg.data.type === 'falcon') {
-            // Falcon detection event
-            raceContext.dispatch({
-              type: 'ADD_DETECTION',
-              payload: {
-                id: `det_${msg.ts_received}`,
-                nodeId: msg.data.src,
-                sensor: msg.data.sensor,
-                payload: msg.data.payload,
-                timestamp: msg.ts_received,
-                type: 'falcon',
-              },
-            });
-          } else if (msg.data && msg.data.type === 'motion') {
-            // Motion detection event
-            raceContext.dispatch({
-              type: 'ADD_DETECTION',
-              payload: {
-                id: `mot_${msg.ts_received}`,
-                nodeId: msg.data.src,
-                event: msg.data.event,
-                timestamp: msg.ts_received,
-                type: 'motion',
-              },
-            });
-          } else if (msg.data && msg.data.type === 'gps') {
-            // GPS update
-            raceContext.dispatch({
-              type: 'UPDATE_GPS',
-              payload: {
-                lat: msg.data.lat,
-                lng: msg.data.lng,
-                sats: msg.data.sats,
-                alt: msg.data.alt,
-                speed: msg.data.speed,
-                hdop: msg.data.hdop,
-                ts_received: msg.ts_received,
-              },
-            });
-          } else if (msg.data && msg.data.type === 'node_msg') {
-            // Message from slave node - parse the payload JSON string
-            try {
-              const nodeData = typeof msg.data.payload === 'string' 
-                ? JSON.parse(msg.data.payload) 
-                : msg.data.payload;
-              
-              raceContext.dispatch({
-                type: 'UPDATE_NODE',
-                payload: {
-                  id: msg.data.src || nodeData.src,
-                  name: `Sensor ${msg.data.src || nodeData.src}`,
-                  lastSeen: msg.ts_received,
-                  battery: nodeData.battery || 0,
-                  rssi: nodeData.rssi || 0,
-                  race_active: nodeData.race_active || false,
-                  camera_present: nodeData.camera_present || false,
-                  timestamp_ms: nodeData.timestamp_ms,
-                  type: nodeData.type,
-                },
-              });
-            } catch (parseErr) {
-              console.warn('Could not parse node payload:', parseErr.message);
-              // Fallback to basic info
-              raceContext.dispatch({
-                type: 'UPDATE_NODE',
-                payload: {
-                  id: msg.data.src,
-                  name: `Sensor ${msg.data.src}`,
-                  lastSeen: msg.ts_received,
-                  payload: msg.data.payload,
-                },
-              });
-            }
-          } else if (msg.data && msg.data.type === 'camera_msg') {
-            // Camera message
-            raceContext.dispatch({
-              type: 'ADD_DETECTION',
-              payload: {
-                id: `cam_${msg.ts_received}`,
-                nodeId: msg.data.src,
-                event: msg.data.event,
-                timestamp: msg.ts_received,
-                type: 'camera',
-              },
-            });
-          }
+        try {
+          // Older code expected msg.data; unify by promoting msg if nested
+          const payloadObj = msg.data && typeof msg.data === 'object' && msg.data.type ? msg.data : msg;
+          console.log('🔄 Processing message type:', payloadObj.type);
+          handleIncomingTelemetry(payloadObj);
+          console.log('✅ Message processed successfully');
+        } catch (e) {
+          console.warn('❌ Telemetry handling error:', e.message);
         }
       });
     } catch (error) {

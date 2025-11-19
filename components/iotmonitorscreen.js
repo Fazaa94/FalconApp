@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -6,453 +6,529 @@ import {
   TouchableOpacity,
   TextInput,
   StatusBar,
-  StyleSheet,
-  Alert,
-  FlatList,
-  Switch,
+  StyleSheet
 } from 'react-native';
-import { useBle } from '../src/ble/BleProvider';
-import { useRace } from '../src/context/RaceContext';
-import { COLORS, FONTS } from './theme';
+import { COLORS, FONTS, styles } from './theme';
 
 const IoTSystemScreen = () => {
-  const { connectedDevice } = useBle();
-  const { state: raceState } = useRace();
-
   const [searchQuery, setSearchQuery] = useState('');
-  const [mockModeEnabled, setMockModeEnabled] = useState(false);
 
-  // Get master status and nodes from RaceContext
-  const masterStatus = raceState.status;
-  const nodes = Object.values(raceState.nodes);
-  const messages = raceState.messages;
-  const detections = raceState.detections;
+  // Mock data for devices
+  const [devices, setDevices] = useState([
+    { id: 'COLLAR-01', name: 'Tracker', type: 'collar', status: 'ready', lastSeen: 'now', connection: 'bluetooth' },
+    { id: 'GATE-03', name: 'Online', type: 'gate', status: 'ready', lastSeen: 'now', connection: 'wifi' },
+    { id: 'Starting Gate', name: 'Weak Signal — 5 ms ago', type: 'gate', status: 'weak', lastSeen: '5ms', connection: 'bluetooth' },
+    { id: 'SENSOR-12', name: 'Bluetooth — 5 min ago', type: 'sensor', status: 'weak', lastSeen: '5min', connection: 'bluetooth' },
+    { id: 'TIMER-01', name: 'Offline', type: 'timer', status: 'offline', lastSeen: '20min', connection: 'wifi' },
+    { id: 'TIMER-02', name: 'Last sync 20 min ago', type: 'timer', status: 'weak', lastSeen: '20min', connection: 'wifi' },
+  ]);
 
   const getStatusColor = (status) => {
-    if (!status) return COLORS.danger;
-    if (status.connected) return COLORS.success;
-    return COLORS.warning;
-  };
-
-  const handleMockModeToggle = (enabled) => {
-    setMockModeEnabled(enabled);
-    if (enabled) {
-      Alert.alert('Mock Mode', 'Mock data simulation enabled (development only)');
+    switch (status) {
+      case 'ready': return COLORS.successGreen;
+      case 'weak': return COLORS.warningYellow;
+      case 'offline': return COLORS.errorRed;
+      default: return COLORS.offlineGray;
     }
   };
 
-  const filteredMessages = messages.filter((msg) => {
-    if (!searchQuery) return true;
-    return (
-      (msg.kind === 'json' &&
-        JSON.stringify(msg.data).toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (msg.kind === 'text' && msg.data.toLowerCase().includes(searchQuery.toLowerCase()))
-    );
-  });
+  const getStatusText = (status) => {
+    switch (status) {
+      case 'ready': return 'READY';
+      case 'weak': return 'WEAK SIGNAL';
+      case 'offline': return 'NO RESPONSE';
+      default: return 'UNKNOWN';
+    }
+  };
 
-  const filteredDetections = detections.filter((det) => {
-    if (!searchQuery) return true;
-    return (
-      det.payload?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      det.type?.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  });
+  const handleRestartDevice = (deviceId) => {
+    // In real app, this would send a restart command to the device
+    console.log(`Restarting device: ${deviceId}`);
+  };
+
+  const SystemStatusCard = () => (
+    <View style={localStyles.statusCard}>
+      <Text style={localStyles.statusCardTitle}>IOT SYSTEM MONITOR</Text>
+      <View style={localStyles.onlineIndicator}>
+        <View style={localStyles.onlineDot} />
+        <Text style={localStyles.onlineText}>All Systems Online</Text>
+      </View>
+      <Text style={localStyles.statusDescription}>
+        Telemetry and collars reporting normally
+      </Text>
+    </View>
+  );
+
+  const NetworkStatusCard = () => (
+    <View style={localStyles.networkCard}>
+      <Text style={localStyles.networkCardTitle}>OVERALL NETWORK STATUS</Text>
+      <View style={localStyles.deviceCountSection}>
+        <Text style={localStyles.deviceCount}>15</Text>
+        <Text style={localStyles.deviceLabel}>Devices</Text>
+      </View>
+      <Text style={localStyles.connectedText}>Connected</Text>
+    </View>
+  );
+
+  const ConnectionStats = () => (
+    <View style={localStyles.connectionStats}>
+      <View style={localStyles.connectionItem}>
+        <Text style={localStyles.connectionNumber}>15</Text>
+        <Text style={localStyles.connectionLabel}>Devices Connected</Text>
+        <Text style={localStyles.connectionType}>Bluetooth</Text>
+      </View>
+      <View style={localStyles.connectionDivider} />
+      <View style={localStyles.connectionItem}>
+        <Text style={localStyles.connectionNumber}>32</Text>
+        <Text style={localStyles.connectionLabel}>Devices (Wi-Fi)</Text>
+        <Text style={localStyles.connectionType}>Wired & Wireless</Text>
+      </View>
+    </View>
+  );
+
+  const DeviceItem = ({ device }) => (
+    <View style={localStyles.deviceItem}>
+      <View style={localStyles.deviceHeader}>
+        <View style={localStyles.deviceInfo}>
+          <Text style={localStyles.deviceId}>{device.id}</Text>
+          <Text style={localStyles.deviceName}>{device.name}</Text>
+        </View>
+        <View style={localStyles.deviceStatus}>
+          <View style={[localStyles.statusDot, { backgroundColor: getStatusColor(device.status) }]} />
+          <Text style={localStyles.statusText}>{getStatusText(device.status)}</Text>
+        </View>
+      </View>
+      <View style={localStyles.deviceActions}>
+        <TouchableOpacity 
+          style={localStyles.actionButton}
+          onPress={() => handleRestartDevice(device.id)}
+        >
+          <Text style={localStyles.actionButtonText}>Restart</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const GPSStatusSection = () => (
+    <View style={localStyles.gpsSection}>
+      <Text style={localStyles.sectionTitle}>GPS STATUS</Text>
+      <View style={localStyles.statusLegend}>
+        <View style={localStyles.legendItem}>
+          <View style={[localStyles.legendDot, { backgroundColor: COLORS.successGreen }]} />
+          <Text style={localStyles.legendText}>READY</Text>
+        </View>
+        <View style={localStyles.legendItem}>
+          <View style={[localStyles.legendDot, { backgroundColor: COLORS.warningYellow }]} />
+          <Text style={localStyles.legendText}>WEAK SIGNAL</Text>
+        </View>
+        <View style={localStyles.legendItem}>
+          <View style={[localStyles.legendDot, { backgroundColor: COLORS.errorRed }]} />
+          <Text style={localStyles.legendText}>NO RESPONSE</Text>
+        </View>
+      </View>
+    </View>
+  );
 
   return (
-    <View style={[ss.container, { backgroundColor: COLORS.desertSand }]}>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.desertSand} />
-
-      <ScrollView style={ss.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Master Status Card */}
-        <View style={[ss.card, { backgroundColor: COLORS.cardBg }]}>
-          <Text style={[ss.cardTitle, { color: COLORS.textPrimary }]}>
-            FalconRace Master Status
-          </Text>
-
-          <View style={ss.statusGrid}>
-            <View style={ss.statusItem}>
-              <Text style={[ss.statusLabel, { color: COLORS.textSecondary }]}>
-                Connection
-              </Text>
-              <View
-                style={[
-                  ss.statusBadge,
-                  { backgroundColor: masterStatus.connected ? COLORS.success : COLORS.danger },
-                ]}
-              >
-                <Text style={[ss.statusBadgeText, { color: COLORS.textPrimary }]}>
-                  {masterStatus.connected ? 'SYNCED' : 'OFFLINE'}
-                </Text>
-              </View>
-            </View>
-
-            <View style={ss.statusItem}>
-              <Text style={[ss.statusLabel, { color: COLORS.textSecondary }]}>
-                Battery
-              </Text>
-              <Text
-                style={[
-                  ss.statusValue,
-                  {
-                    color:
-                      masterStatus.battery && masterStatus.battery < 3.3
-                        ? COLORS.danger
-                        : COLORS.success,
-                  },
-                ]}
-              >
-                {masterStatus.battery?.toFixed(2)}V
-              </Text>
-            </View>
-
-            <View style={ss.statusItem}>
-              <Text style={[ss.statusLabel, { color: COLORS.textSecondary }]}>
-                GPS Satellites
-              </Text>
-              <Text style={[ss.statusValue, { color: COLORS.electric }]}>
-                {masterStatus.gps_sats || 0}
-              </Text>
-            </View>
-
-            <View style={ss.statusItem}>
-              <Text style={[ss.statusLabel, { color: COLORS.textSecondary }]}>
-                Race Active
-              </Text>
-              <View
-                style={[
-                  ss.statusBadge,
-                  { backgroundColor: masterStatus.race_active ? COLORS.falcon : COLORS.warning },
-                ]}
-              >
-                <Text style={[ss.statusBadgeText, { color: COLORS.textPrimary }]}>
-                  {masterStatus.race_active ? 'RUNNING' : 'IDLE'}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {masterStatus.lat && masterStatus.lng && (
-            <View style={ss.gpsInfo}>
-              <Text style={[ss.gpsLabel, { color: COLORS.textSecondary }]}>
-                GPS Location:
-              </Text>
-              <Text style={[ss.gpsCoords, { color: COLORS.electric }]}>
-                {masterStatus.lat.toFixed(6)}, {masterStatus.lng.toFixed(6)}
-              </Text>
-            </View>
-          )}
+    <View style={modernStyles.container}>
+      <StatusBar backgroundColor={COLORS.warmStone} barStyle="dark-content" />
+      {/* Header */}
+      <View style={modernStyles.header}>
+        <Text style={modernStyles.mainTitle}>IoT System Monitor</Text>
+        <TextInput
+          style={modernStyles.searchInput}
+          placeholder="Search devices..."
+          placeholderTextColor={COLORS.charcoal + '80'}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+      </View>
+      <ScrollView showsVerticalScrollIndicator={false}>
+        <View style={modernStyles.dashboardRow}>
+          <SystemStatusCard />
+          <NetworkStatusCard />
         </View>
-
-        {/* Nodes Status */}
-        {nodes.length > 0 && (
-          <View style={[ss.card, { backgroundColor: COLORS.cardBg }]}>
-            <Text style={[ss.cardTitle, { color: COLORS.textPrimary }]}>
-              LoRa Nodes ({nodes.length})
-            </Text>
-
-            <FlatList
-              data={nodes}
-              scrollEnabled={false}
-              keyExtractor={(item) => `node_${item.id}`}
-              renderItem={({ item }) => {
-                const now = Date.now();
-                const timeSinceMs = item.lastSeen ? now - item.lastSeen : Infinity;
-                const isOnline = timeSinceMs < 30000;
-
-                return (
-                  <View
-                    style={[
-                      ss.nodeItem,
-                      {
-                        backgroundColor: COLORS.surfaceBg,
-                        borderLeftColor: isOnline ? COLORS.success : COLORS.danger,
-                      },
-                    ]}
-                  >
-                    <View style={ss.nodeItemLeft}>
-                      <Text style={[ss.nodeId, { color: COLORS.falcon }]}>
-                        Node {item.id}
-                      </Text>
-                      <View style={ss.nodeDetails}>
-                        <Text style={[ss.nodeDetail, { color: COLORS.textSecondary }]}>
-                          Battery: {item.battery?.toFixed(2)}V
-                        </Text>
-                        <Text style={[ss.nodeDetail, { color: COLORS.textSecondary }]}>
-                          RSSI: {item.rssi} dBm
-                        </Text>
-                        {item.cameraPresent && (
-                          <Text style={[ss.nodeDetail, { color: COLORS.electric }]}>
-                            📷 Camera
-                          </Text>
-                        )}
-                        <Text style={[ss.nodeDetail, { color: COLORS.textSecondary }]}>
-                          {timeSinceMs < Infinity ? `${(timeSinceMs / 1000).toFixed(1)}s ago` : 'Never'}
-                        </Text>
-                      </View>
-                    </View>
-                    <View
-                      style={[
-                        ss.onlineIndicator,
-                        { backgroundColor: isOnline ? COLORS.success : COLORS.danger },
-                      ]}
-                    />
-                  </View>
-                );
-              }}
-            />
-          </View>
-        )}
-
-        {/* Detection Events */}
-        {detections.length > 0 && (
-          <View style={[ss.card, { backgroundColor: COLORS.cardBg }]}>
-            <Text style={[ss.cardTitle, { color: COLORS.textPrimary }]}>
-              Detection Events ({detections.length})
-            </Text>
-
-            <FlatList
-              data={detections.slice(0, 10)}
-              scrollEnabled={false}
-              keyExtractor={(item, idx) => `det_${idx}`}
-              renderItem={({ item }) => (
-                <View style={[ss.eventItem, { backgroundColor: COLORS.surfaceBg }]}>
-                  <Text style={[ss.eventType, { color: COLORS.electric }]}>
-                    {item.type === 'falcon' ? '🦅 Falcon' : '📍 Motion'} - Node {item.src}
-                  </Text>
-                  <Text style={[ss.eventPayload, { color: COLORS.textSecondary }]}>
-                    {item.payload || item.data?.payload || 'Detection event'}
-                  </Text>
-                  <Text style={[ss.eventTime, { color: COLORS.textTertiary }]}>
-                    {new Date(item.ts_received || Date.now()).toLocaleTimeString()}
-                  </Text>
-                </View>
-              )}
-            />
-          </View>
-        )}
-
-        {/* Message Log */}
-        <View style={[ss.card, { backgroundColor: COLORS.cardBg }]}>
-          <View style={ss.messageHeader}>
-            <Text style={[ss.cardTitle, { color: COLORS.textPrimary }]}>
-              Message Log ({messages.length})
-            </Text>
-          </View>
-
-          <TextInput
-            style={[ss.searchInput, { backgroundColor: COLORS.surfaceBg, color: COLORS.textPrimary, borderColor: COLORS.falcon }]}
-            placeholder="Search messages..."
-            placeholderTextColor={COLORS.textTertiary}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-
-          <FlatList
-            data={filteredMessages.slice(0, 15)}
-            scrollEnabled={false}
-            keyExtractor={(item, idx) => `msg_${idx}`}
-            renderItem={({ item }) => (
-              <View style={[ss.messageItem, { backgroundColor: COLORS.surfaceBg }]}>
-                <Text style={[ss.messageType, { color: COLORS.falcon }]}>
-                  {item.kind === 'json' ? `[${item.data.type}]` : '[text]'}
-                </Text>
-                <Text
-                  style={[ss.messageContent, { color: COLORS.textSecondary }]}
-                  numberOfLines={2}
-                >
-                  {item.kind === 'json'
-                    ? JSON.stringify(item.data).substring(0, 60)
-                    : item.data}
-                </Text>
-              </View>
-            )}
-          />
+        <ConnectionStats />
+        <GPSStatusSection />
+        <View style={modernStyles.devicesSection}>
+          <Text style={modernStyles.sectionTitle}>Connected Devices</Text>
+          {devices.map((device) => (
+            <DeviceItem key={device.id} device={device} />
+          ))}
         </View>
-
-        {/* Development Mode Toggle */}
-        <View style={[ss.card, { backgroundColor: COLORS.cardBg }]}>
-          <View style={ss.settingRow}>
-            <View>
-              <Text style={[ss.settingLabel, { color: COLORS.textPrimary }]}>
-                Mock Mode (Dev)
-              </Text>
-              <Text style={[ss.settingDesc, { color: COLORS.textSecondary }]}>
-                Simulate BLE messages without hardware
-              </Text>
-            </View>
-            <Switch
-              value={mockModeEnabled}
-              onValueChange={handleMockModeToggle}
-              trackColor={{ false: COLORS.textTertiary, true: COLORS.falcon }}
-            />
-          </View>
-
-          {mockModeEnabled && (
-            <Text style={[ss.mockModeNote, { color: COLORS.warning }]}>
-              ⚠️ Mock mode enabled - development only
-            </Text>
-          )}
+        <View style={modernStyles.quickActions}>
+          <TouchableOpacity style={[modernStyles.quickButton, modernStyles.readyButton]}>
+            <Text style={modernStyles.quickButtonText}>Ready</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[modernStyles.quickButton, modernStyles.approvedButton]}>
+            <Text style={modernStyles.quickButtonText}>Approved</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[modernStyles.quickButton, modernStyles.weakButton]}>
+            <Text style={modernStyles.quickButtonText}>Weak</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[modernStyles.quickButton, modernStyles.restartButton]}>
+            <Text style={modernStyles.quickButtonText}>Restart</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[modernStyles.quickButton, modernStyles.noResponseButton]}>
+            <Text style={modernStyles.quickButtonText}>No Resp</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     </View>
   );
-};
-
-const ss = StyleSheet.create({
+// Modern styles for IoTSystemScreen
+const modernStyles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: COLORS.warmStone,
+    paddingTop: 8,
+    paddingBottom: 8,
   },
-  scrollView: {
-    flex: 1,
-    padding: 16,
+  header: {
+    marginBottom: 20,
+    paddingHorizontal: 16,
   },
-  card: {
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-  },
-  cardTitle: {
-    fontSize: 16,
-    fontWeight: '700',
+  mainTitle: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 28,
+    color: COLORS.cobaltBlue,
+    textAlign: 'center',
     marginBottom: 12,
-  },
-  statusGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  statusItem: {
-    flex: 1,
-    minWidth: '48%',
-  },
-  statusLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginBottom: 6,
-  },
-  statusValue: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  statusBadgeText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  gpsInfo: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 107, 53, 0.2)',
-  },
-  gpsLabel: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  gpsCoords: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  nodeItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderLeftWidth: 4,
-  },
-  nodeItemLeft: {
-    flex: 1,
-  },
-  nodeId: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 6,
-  },
-  nodeDetails: {
-    gap: 3,
-  },
-  nodeDetail: {
-    fontSize: 11,
-    fontWeight: '500',
-  },
-  onlineIndicator: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-  },
-  eventItem: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  eventType: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  eventPayload: {
-    fontSize: 12,
-    marginBottom: 2,
-  },
-  eventTime: {
-    fontSize: 10,
-  },
-  messageHeader: {
-    marginBottom: 12,
+    letterSpacing: 1,
   },
   searchInput: {
+    backgroundColor: COLORS.desertSand,
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13,
-    marginBottom: 12,
-  },
-  messageItem: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    borderColor: COLORS.charcoal + '40',
+    borderRadius: 10,
+    padding: 14,
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 16,
+    color: COLORS.charcoal,
     marginBottom: 8,
   },
-  messageType: {
-    fontSize: 12,
-    fontWeight: '600',
-    marginBottom: 2,
-  },
-  messageContent: {
-    fontSize: 11,
-  },
-  settingRow: {
+  dashboardRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    gap: 16,
+    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  devicesSection: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    backgroundColor: COLORS.desertSand,
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: COLORS.charcoal,
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  sectionTitle: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 20,
+    color: COLORS.cobaltBlue,
+    marginBottom: 12,
+  },
+  quickActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    justifyContent: 'center',
+  },
+  quickButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginHorizontal: 2,
+    backgroundColor: COLORS.warmStone,
+    shadowColor: COLORS.charcoal,
+    shadowOpacity: 0.07,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  readyButton: {
+    backgroundColor: COLORS.oasisGreen,
+  },
+  approvedButton: {
+    backgroundColor: COLORS.cobaltBlue,
+  },
+  weakButton: {
+    backgroundColor: COLORS.warningYellow,
+  },
+  restartButton: {
+    backgroundColor: COLORS.terracotta,
+  },
+  noResponseButton: {
+    backgroundColor: COLORS.errorRed,
+  },
+  quickButtonText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 15,
+    color: COLORS.charcoal,
+    textTransform: 'uppercase',
+  },
+});
+};
+
+const localStyles = StyleSheet.create({
+  header: {
+    marginBottom: 20,
+  },
+  mainTitle: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 28,
+    color: COLORS.charcoal,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  searchInput: {
+    backgroundColor: COLORS.warmStone,
+    borderWidth: 1,
+    borderColor: COLORS.charcoal + '40',
+    borderRadius: 8,
+    padding: 12,
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 16,
+    color: COLORS.charcoal,
+  },
+  statusCard: {
+    backgroundColor: COLORS.warmStone,
+    padding: 20,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.successGreen,
+  },
+  statusCardTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 18,
+    color: COLORS.charcoal,
+    marginBottom: 12,
+  },
+  onlineIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  onlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.successGreen,
+    marginRight: 8,
+  },
+  onlineText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.successGreen,
+  },
+  statusDescription: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 14,
+    color: COLORS.charcoal + '80',
+  },
+  networkCard: {
+    backgroundColor: COLORS.cobaltBlue,
+    padding: 20,
+    borderRadius: 12,
+    marginBottom: 16,
     alignItems: 'center',
   },
-  settingLabel: {
+  networkCardTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.desertSand,
+    marginBottom: 16,
+  },
+  deviceCountSection: {
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  deviceCount: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 36,
+    color: COLORS.desertSand,
+  },
+  deviceLabel: {
+    fontFamily: FONTS.montserratRegular,
     fontSize: 14,
-    fontWeight: '600',
+    color: COLORS.desertSand,
+  },
+  connectedText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.desertSand,
+  },
+  connectionStats: {
+    flexDirection: 'row',
+    backgroundColor: COLORS.warmStone,
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 16,
+  },
+  connectionItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  connectionNumber: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 24,
+    color: COLORS.cobaltBlue,
     marginBottom: 4,
   },
-  settingDesc: {
-    fontSize: 12,
+  connectionLabel: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 14,
+    color: COLORS.charcoal,
+    textAlign: 'center',
+    marginBottom: 4,
   },
-  mockModeNote: {
+  connectionType: {
+    fontFamily: FONTS.montserratBold,
     fontSize: 12,
-    fontWeight: '500',
-    marginTop: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+    color: COLORS.charcoal + '80',
+    textAlign: 'center',
+  },
+  connectionDivider: {
+    width: 1,
+    backgroundColor: COLORS.charcoal + '20',
+    marginHorizontal: 10,
+  },
+  sectionTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 20,
+    color: COLORS.charcoal,
+    marginBottom: 16,
+  },
+  gpsSection: {
+    backgroundColor: COLORS.warmStone,
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+  statusLegend: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    minWidth: '30%',
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
     borderRadius: 4,
-    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+    marginRight: 8,
+  },
+  legendText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: COLORS.charcoal,
+  },
+  devicesSection: {
+    backgroundColor: COLORS.warmStone,
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
+  deviceItem: {
+    backgroundColor: COLORS.desertSand,
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderLeftWidth: 4,
+  },
+  deviceHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  deviceInfo: {
+    flex: 1,
+  },
+  deviceId: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.charcoal,
+    marginBottom: 4,
+  },
+  deviceName: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 14,
+    color: COLORS.charcoal + '80',
+  },
+  deviceStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  statusText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: COLORS.charcoal,
+  },
+  deviceActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  actionButton: {
+    backgroundColor: COLORS.terracotta,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  actionButtonText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: COLORS.desertSand,
+  },
+  quickActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 24,
+  },
+  quickButton: {
+    flex: 1,
+    minWidth: '30%',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  readyButton: {
+    backgroundColor: COLORS.successGreen,
+  },
+  approvedButton: {
+    backgroundColor: COLORS.oasisGreen,
+  },
+  weakButton: {
+    backgroundColor: COLORS.warningYellow,
+  },
+  restartButton: {
+    backgroundColor: COLORS.terracotta,
+  },
+  noResponseButton: {
+    backgroundColor: COLORS.errorRed,
+  },
+  quickButtonText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: COLORS.desertSand,
+    textAlign: 'center',
   },
 });
 

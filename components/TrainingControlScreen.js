@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
   Switch,
 } from 'react-native';
 import { COLORS, FONTS, styles } from './theme';
+import { useRace } from '../src/context/RaceContext';
 import realm from '../db/database';
 import ExportService from '../services/ExportService';
 import RNFS from 'react-native-fs';
@@ -87,68 +88,82 @@ const TrainingControlScreen = () => {
     };
   }, []);
 
-  // Training simulation
+  // Live telemetry integration
+  const { state: raceState } = useRace();
+
+  // Memoized list of detections relevant during training (all falcon/motion events)
+  const recentDetections = useMemo(() => {
+    if (!raceState?.detections) return [];
+    // For now we cannot map to a specific falcon reliably; keep all
+    return raceState.detections.slice(0, 50); // limit
+  }, [raceState.detections]);
+
+  const getLiveSpeed = () => {
+    // Prefer GPS speed (km/h -> m/s)
+    if (raceState?.gps?.speed_kmh) {
+      return raceState.gps.speed_kmh / 3.6;
+    }
+    // Derive speed from detection frequency (rough): meters per detection * detections per second
+    const windowSecs = 30;
+    const now = Date.now();
+    const windowDetections = recentDetections.filter(d => {
+      if (!d.ts_iso) return false;
+      const ts = Date.parse(d.ts_iso);
+      return (now - ts) / 1000 <= windowSecs;
+    });
+    const detectionsPerSec = windowDetections.length / windowSecs;
+    // Assume each detection implies passage of ~5 meters (placeholder until node distance known)
+    return detectionsPerSec * 5;
+  };
+
   useEffect(() => {
     let interval;
     if (isTrainingActive && selectedFalcon) {
       interval = setInterval(() => {
         setTrainingTime(prev => prev + 1);
-        
-        // Simulate training metrics
-        const speed = 6 + Math.random() * 4; // variable speed for training
-        const newPosition = Math.min(
-          sessionConfig.plannedDistance, 
-          speed * trainingTime
-        );
-        setCurrentPosition(newPosition);
-
-        // Record heart rate data
-        recordHeartRate();
-
-        // Update performance metrics
+        const speed = getLiveSpeed(); // m/s
+        setCurrentPosition(prev => Math.min(sessionConfig.plannedDistance, prev + speed));
+        recordHeartRate(); // still simulated until real HR available
         updatePerformanceMetrics(speed);
-
-        // Check if training session should end
-        if (trainingTime >= sessionConfig.plannedDuration * 60 || 
-            newPosition >= sessionConfig.plannedDistance) {
+        const shouldEnd = (trainingTime + 1) >= sessionConfig.plannedDuration * 60 || (currentPosition >= sessionConfig.plannedDistance - 0.1);
+        if (shouldEnd) {
           finishTraining();
         }
       }, 1000);
     }
-    return () => clearInterval(interval);
-  }, [isTrainingActive, trainingTime, selectedFalcon]);
+    return () => interval && clearInterval(interval);
+  }, [isTrainingActive, selectedFalcon, raceState.gps, recentDetections]);
 
   const recordHeartRate = () => {
+    // Placeholder: simulate HR until sensor integration
     const baseHeartRate = 120;
-    const activityHeartRate = 140 + Math.floor(Math.random() * 60);
+    const activityHeartRate = 140 + Math.floor(Math.random() * 40);
     const heartRate = isTrainingActive ? activityHeartRate : baseHeartRate;
-    
-    const heartRateRecord = {
-      id: uuid.v4(),
-      timestamp: new Date(),
-      heartRate: heartRate,
-      activityLevel: isTrainingActive ? 'active' : 'resting'
-    };
-    
+    const heartRateRecord = { id: uuid.v4(), timestamp: new Date(), heartRate, activityLevel: isTrainingActive ? 'active' : 'resting' };
     setHeartRateData(prev => [...prev, heartRateRecord]);
   };
 
   const updatePerformanceMetrics = (currentSpeed) => {
     setPerformanceMetrics(prev => ({
-      averageSpeed: ((prev.averageSpeed * trainingTime + currentSpeed) / (trainingTime + 1)),
+      averageSpeed: (trainingTime === 0) ? currentSpeed : ((prev.averageSpeed * trainingTime + currentSpeed) / (trainingTime + 1)),
       maxSpeed: Math.max(prev.maxSpeed, currentSpeed),
-      accelerationTime: prev.accelerationTime || (currentSpeed > 8 ? trainingTime : 0),
+      accelerationTime: prev.accelerationTime || (currentSpeed > 8 ? trainingTime : prev.accelerationTime),
       consistencyScore: calculateConsistency(currentSpeed),
       enduranceIndex: calculateEnduranceIndex()
     }));
   };
 
   const calculateConsistency = (currentSpeed) => {
+    // Use variability of live-derived speed over last 10 seconds
     if (trainingTime < 10) return 0;
-    const recentSpeeds = heartRateData.slice(-10).map(hr => hr.heartRate / 20); // rough speed estimate
-    const avgSpeed = recentSpeeds.reduce((a, b) => a + b, 0) / recentSpeeds.length;
-    const variance = recentSpeeds.reduce((a, b) => a + Math.pow(b - avgSpeed, 2), 0) / recentSpeeds.length;
-    return Math.max(0, 100 - (Math.sqrt(variance) / avgSpeed * 100));
+    const sampleWindow = 10;
+    const speeds = performanceMetrics.historySpeeds || [];
+    const newHistory = [...speeds.slice(-sampleWindow + 1), currentSpeed];
+    performanceMetrics.historySpeeds = newHistory; // ephemeral augmentation
+    const avg = newHistory.reduce((a,b)=>a+b,0)/newHistory.length;
+    const variance = newHistory.reduce((a,b)=>a+Math.pow(b-avg,2),0)/newHistory.length;
+    if (avg === 0) return 0;
+    return Math.max(0, 100 - (Math.sqrt(variance) / avg * 100));
   };
 
   const calculateEnduranceIndex = () => {
