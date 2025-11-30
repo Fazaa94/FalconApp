@@ -25,7 +25,7 @@
 //     dateOfBirth: '',
 //     weight: '',
 //     distinguishingMarks: '',
-//     medicalNotes: '',
+//     // medicalNotes: '',
 //     sex: 'Male',
 //       trainingLevel: 'Beginner', // ✅ Default value added
 
@@ -115,7 +115,7 @@
 //         dateOfBirth: '',
 //         weight: '',
 //         distinguishingMarks: '',
-//         medicalNotes: '',
+//         // medicalNotes: '',
 //         sex: 'Male',
 //         spayedNeutered: false,
 //       });
@@ -250,8 +250,8 @@
 //             placeholderTextColor={COLORS.charcoal + '80'}
 //             multiline
 //             numberOfLines={3}
-//             value={formData.medicalNotes}
-//             onChangeText={(text) => updateFormData('medicalNotes', text)}
+//             // value={formData.medicalNotes}
+//             // onChangeText={(text) => updateFormData('medicalNotes', text)}
 //           />
 //         </View>
 //       </View>
@@ -553,18 +553,10 @@ const RegistrationScreen = () => {
   const [formData, setFormData] = useState({
     animalId: '',
     falconName: '',
-    breed: '',
-    dateOfBirth: '',
     weight: '',
-    distinguishingMarks: '',
-    medicalNotes: '',
-    sex: 'Male',
-    trainingLevel: 'Beginner',
-    spayedNeutered: false,
   });
 
   const [profileImage, setProfileImage] = useState(null);
-  const [vetRecords, setVetRecords] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   
   // Animation values
@@ -633,26 +625,25 @@ const RegistrationScreen = () => {
   };
 
   const handleSubmit = async () => {
-    if (!formData.animalId || !formData.falconName || !formData.breed) {
-      Alert.alert('Missing Information', 'Please fill in all required fields: Animal ID, falcon Name, and Breed');
-      return;
-    }
+      if (!formData.animalId || !formData.falconName || !formData.weight) {
+        Alert.alert('Missing Information', 'Please fill in all required fields: Animal ID, falcon Name, and Weight');
+        return;
+      }
 
     setIsSubmitting(true);
-    
     try {
       realm.write(() => {
-        realm.create('FalconRegistration', {
-          id: uuid.v4(),
-          ...formData,
-          imagePath: profileImage || '',
-          synced: false,
-          createdAt: new Date(),
-          trainingLevel: 'Beginner',
-        });
+          realm.create('FalconRegistration', {
+            id: uuid.v4(),
+            animalId: formData.animalId,
+            falconName: formData.falconName,
+            weight: formData.weight,
+            imagePath: profileImage || '',
+            synced: false,
+            createdAt: new Date(),
+          });
       });
 
-      // Success animation
       Animated.sequence([
         Animated.timing(fadeAnim, {
           toValue: 0.7,
@@ -669,7 +660,6 @@ const RegistrationScreen = () => {
       Alert.alert('🎉 Success!', 'Registration saved offline!', [
         { text: 'OK', onPress: resetForm }
       ]);
-      
     } catch (error) {
       console.error('Error saving locally:', error);
       Alert.alert('Error', 'Could not save registration. Please try again.');
@@ -679,17 +669,11 @@ const RegistrationScreen = () => {
   };
 
   const resetForm = () => {
-    setFormData({
-      animalId: '',
-      falconName: '',
-      breed: '',
-      dateOfBirth: '',
-      weight: '',
-      distinguishingMarks: '',
-      medicalNotes: '',
-      sex: 'Male',
-      spayedNeutered: false,
-    });
+      setFormData({
+        animalId: '',
+        falconName: '',
+        weight: '',
+      });
     setProfileImage(null);
   };
 
@@ -785,135 +769,68 @@ const RegistrationScreen = () => {
             )}
           </View>
 
-          {/* Enhanced Input Fields */}
-          {[
-            { label: "falcon's Name", field: 'falconName', icon: 'badge', required: true, placeholder: 'Enter falcon name (min 3 characters)' },
-            { label: "Breed", field: 'breed', icon: 'nature', required: true, placeholder: 'Enter breed' },
-            { label: "Date of Birth", field: 'dateOfBirth', icon: 'cake', placeholder: 'DD/MM/YYYY' },
-            { label: "Weight", field: 'weight', icon: 'fitness-center', placeholder: 'Weight in kg', keyboardType: 'numeric' },
-          ].map(({ label, field, icon, required, placeholder, keyboardType }) => (
-            <View style={localStyles.inputGroup} key={field}>
+            {/* Falcon Name Field */}
+            <View style={localStyles.inputGroup}>
               <View style={localStyles.labelRow}>
-                <Text style={localStyles.label}>{label}</Text>
-                {required && (
-                  <View style={localStyles.requiredBadge}>
-                    <Text style={localStyles.requiredText}>Required</Text>
-                  </View>
-                )}
+                <Text style={localStyles.label}>Falcon's Name</Text>
+                <View style={localStyles.requiredBadge}>
+                  <Text style={localStyles.requiredText}>Required</Text>
+                </View>
               </View>
               <View style={localStyles.inputContainer}>
-                <Icon name={icon} size={20} color={COLORS.charcoal + '60'} style={localStyles.inputIcon} />
+                <Icon name="badge" size={20} color={COLORS.charcoal + '60'} style={localStyles.inputIcon} />
                 <TextInput
                   style={localStyles.input}
-                  placeholder={placeholder}
+                  placeholder="Enter falcon name (min 3 characters)"
                   placeholderTextColor={COLORS.charcoal + '60'}
-                  value={formData[field]}
-                  onChangeText={(text) => updateFormData(field, text)}
-                  keyboardType={keyboardType}
+                  value={formData.falconName}
+                  onChangeText={(text) => updateFormData('falconName', text)}
                 />
               </View>
             </View>
-          ))}
 
-          {/* Text Areas */}
-          {[
-            { label: "Distinguishing Marks", field: 'distinguishingMarks', icon: 'visibility' },
-            { label: "Medical Notes", field: 'medicalNotes', icon: 'local-hospital' },
-          ].map(({ label, field, icon }) => (
-            <View style={localStyles.inputGroup} key={field}>
+            {/* Weight Field */}
+            <View style={localStyles.inputGroup}>
               <View style={localStyles.labelRow}>
-                <Icon name={icon} size={18} color={COLORS.charcoal} />
-                <Text style={localStyles.label}>{label}</Text>
+                <Text style={localStyles.label}>Weight</Text>
+                <View style={localStyles.requiredBadge}>
+                  <Text style={localStyles.requiredText}>Required</Text>
+                </View>
               </View>
-              <TextInput
-                style={[localStyles.input, localStyles.textArea]}
-                placeholder={`Enter ${label.toLowerCase()}`}
-                placeholderTextColor={COLORS.charcoal + '60'}
-                multiline
-                numberOfLines={3}
-                value={formData[field]}
-                onChangeText={(text) => updateFormData(field, text)}
-              />
+              <View style={localStyles.inputContainer}>
+                <Icon name="fitness-center" size={20} color={COLORS.charcoal + '60'} style={localStyles.inputIcon} />
+                <TextInput
+                  style={localStyles.input}
+                  placeholder="Weight in kg"
+                  placeholderTextColor={COLORS.charcoal + '60'}
+                  value={formData.weight}
+                  onChangeText={(text) => updateFormData('weight', text)}
+                  keyboardType="numeric"
+                />
+              </View>
             </View>
-          ))}
-        </View>
 
-        {/* Enhanced Owner Information Section */}
-        <View style={localStyles.section}>
-          <View style={localStyles.sectionHeader}>
-            <Icon name="person" size={20} color={COLORS.charcoal} />
-            <Text style={localStyles.sectionTitle}>Owner Information</Text>
-          </View>
-          
-          <View style={localStyles.row}>
-            <View style={localStyles.labelContainer}>
-              <Icon name="wc" size={18} color={COLORS.charcoal} />
-              <Text style={localStyles.label}>Sex</Text>
+          {/* Text Area: Distinguishing Marks only */}
+          <View style={localStyles.inputGroup} key={'distinguishingMarks'}>
+            <View style={localStyles.labelRow}>
+              <Icon name={'visibility'} size={18} color={COLORS.charcoal} />
+              <Text style={localStyles.label}>Distinguishing Marks</Text>
             </View>
-            <View style={localStyles.sexButtons}>
-              {['Male', 'Female'].map((gender) => (
-                <TouchableOpacity
-                  key={gender}
-                  style={[
-                    localStyles.sexButton,
-                    formData.sex === gender && localStyles.sexButtonActive
-                  ]}
-                  onPress={() => updateFormData('sex', gender)}
-                >
-                  <Icon 
-                    name={gender === 'Male' ? 'male' : 'female'} 
-                    size={16} 
-                    color={formData.sex === gender ? COLORS.desertSand : COLORS.charcoal} 
-                  />
-                  <Text style={[
-                    localStyles.sexButtonText,
-                    formData.sex === gender && localStyles.sexButtonTextActive
-                  ]}>{gender}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          <View style={localStyles.row}>
-            <View style={localStyles.labelContainer}>
-              <Icon name="medical-services" size={18} color={COLORS.charcoal} />
-              <Text style={localStyles.label}>Spayed/Neutered</Text>
-            </View>
-            <View style={localStyles.switchContainer}>
-              <Text style={localStyles.switchLabel}>
-                {formData.spayedNeutered ? 'Yes' : 'No'}
-              </Text>
-              <Switch
-                value={formData.spayedNeutered}
-                onValueChange={(value) => updateFormData('spayedNeutered', value)}
-                trackColor={{ false: COLORS.warmStone, true: COLORS.oasisGreen }}
-                thumbColor={COLORS.desertSand}
-              />
-            </View>
+            <TextInput
+              style={[localStyles.input, localStyles.textArea]}
+              placeholder={'Enter distinguishing marks'}
+              placeholderTextColor={COLORS.charcoal + '60'}
+              multiline
+              numberOfLines={3}
+              value={formData['distinguishingMarks']}
+              onChangeText={(text) => updateFormData('distinguishingMarks', text)}
+            />
           </View>
         </View>
 
-        {/* Enhanced Verification Section */}
-        <View style={localStyles.verificationSection}>
-          <View style={localStyles.verificationHeader}>
-            <Icon name="verified" size={24} color={COLORS.oasisGreen} />
-            <Text style={localStyles.verificationTitle}>Health Verification</Text>
-          </View>
-          <View style={localStyles.verifiedBadge}>
-            <Icon name="check-circle" size={16} color={COLORS.desertSand} />
-            <Text style={localStyles.verifiedText}>VACCINATION VERIFIED</Text>
-          </View>
-          <View style={localStyles.approvedSection}>
-            <View style={localStyles.approvedInfo}>
-              <Text style={localStyles.vaccinationText}>Medical Status</Text>
-              <Text style={localStyles.approvedSubtext}>All requirements met</Text>
-            </View>
-            <View style={localStyles.approvedBadge}>
-              <Icon name="verified-user" size={16} color={COLORS.desertSand} />
-              <Text style={localStyles.approvedText}>Approved</Text>
-            </View>
-          </View>
-        </View>
+        {/* ...existing code... */}
+
+        {/* ...existing code... */}
 
         {/* Enhanced Submit Button */}
         <TouchableOpacity 

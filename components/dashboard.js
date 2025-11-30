@@ -1,855 +1,3 @@
-
-// import React, { useState, useEffect } from 'react';
-// import {
-//   View,
-//   Text,
-//   ScrollView,
-//   TouchableOpacity,
-//   ActivityIndicator,
-//   StatusBar,
-//   StyleSheet,
-//   PermissionsAndroid,
-//   Platform,
-//   Alert
-// } from 'react-native';
-// import { BleManager } from 'react-native-ble-plx';
-// import { COLORS, FONTS, styles } from './theme';
-
-// // BLE UUIDs matching your ESP32 code
-// const UART_SERVICE_UUID = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-// const UART_TX_CHARACTERISTIC_UUID = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E'; // Notify
-// const UART_RX_CHARACTERISTIC_UUID = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E'; // Write
-
-// const LoRaConnectionScreen = () => {
-//   const [isScanning, setIsScanning] = useState(false);
-//   const [foundDevices, setFoundDevices] = useState([]);
-//   const [connectedDevice, setConnectedDevice] = useState(null);
-//   const [sensorData, setSensorData] = useState('');
-//   const [meshNodes, setMeshNodes] = useState([]);
-//   const [raceState, setRaceState] = useState('IDLE');
-//   const [nodeDetections, setNodeDetections] = useState({});
-//   const [bleManager] = useState(new BleManager());
-
-//   useEffect(() => {
-//     // Request Bluetooth permissions
-//     requestPermissions();
-
-//     // Set up BLE manager subscriptions
-//     const subscription = bleManager.onStateChange((state) => {
-//       if (state === 'PoweredOn') {
-//         console.log('Bluetooth is powered on');
-//       } else if (state === 'PoweredOff') {
-//         console.log('Bluetooth is powered off');
-//         Alert.alert('Bluetooth Off', 'Please enable Bluetooth to scan for devices');
-//       }
-//     }, true);
-
-//     return () => {
-//       subscription.remove();
-//       bleManager.destroy();
-//     };
-//   }, []);
-
-//   const requestPermissions = async () => {
-//     if (Platform.OS === 'android') {
-//       try {
-//         const granted = await PermissionsAndroid.requestMultiple([
-//           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-//           PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-//           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-//         ]);
-        
-//         if (
-//           granted['android.permission.ACCESS_FINE_LOCATION'] === PermissionsAndroid.RESULTS.GRANTED &&
-//           granted['android.permission.BLUETOOTH_SCAN'] === PermissionsAndroid.RESULTS.GRANTED &&
-//           granted['android.permission.BLUETOOTH_CONNECT'] === PermissionsAndroid.RESULTS.GRANTED
-//         ) {
-//           console.log('All permissions granted');
-//         } else {
-//           Alert.alert('Permissions Required', 'Bluetooth permissions are needed to connect to devices');
-//         }
-//       } catch (err) {
-//         console.warn(err);
-//       }
-//     }
-//   };
-
-//   const startScanning = () => {
-//     setIsScanning(true);
-//     setFoundDevices([]);
-    
-//     bleManager.startDeviceScan(null, null, (error, device) => {
-//       if (error) {
-//         console.error('Scan error:', error);
-//         setIsScanning(false);
-//         return;
-//       }
-
-//       // Filter for LoRaBLE devices (updated from ESP32 to LoRaBLE)
-//       if (device.name?.includes('LoRaBLE') || device.localName?.includes('LoRaBLE')) {
-//         setFoundDevices(prevDevices => {
-//           // Check if device already exists
-//           const exists = prevDevices.some(d => d.id === device.id);
-//           if (!exists) {
-//             return [...prevDevices, {
-//               id: device.id,
-//               name: device.name || device.localName || 'Unknown LoRaBLE',
-//               device: device,
-//               signalStrength: device.rssi,
-//               status: 'ready'
-//             }];
-//           }
-//           return prevDevices;
-//         });
-//       }
-//     });
-
-//     // Stop scanning after 10 seconds
-//     setTimeout(() => {
-//       stopScanning();
-//     }, 10000);
-//   };
-
-//   const stopScanning = () => {
-//     bleManager.stopDeviceScan();
-//     setIsScanning(false);
-//   };
-
-//   const handleCancelScan = () => {
-//     stopScanning();
-//     setFoundDevices([]);
-//   };
-
-//   const connectToDevice = async (device) => {
-//     try {
-//       setIsScanning(false);
-//       stopScanning();
-
-//       // Update device status
-//       setFoundDevices(prev => 
-//         prev.map(d => 
-//           d.id === device.id ? { ...d, status: 'connecting' } : d
-//         )
-//       );
-
-//       const connectedDevice = await device.device.connect();
-//       await connectedDevice.discoverAllServicesAndCharacteristics();
-      
-//       setConnectedDevice(connectedDevice);
-      
-//       // Update device status
-//       setFoundDevices(prev => 
-//         prev.map(d => 
-//           d.id === device.id ? { ...d, status: 'connected' } : d
-//         )
-//       );
-
-//       // Set up notifications for sensor data and mesh updates
-//       await setupNotifications(connectedDevice);
-
-//       Alert.alert('Connected', `Successfully connected to ${device.name}`);
-
-//     } catch (error) {
-//       console.error('Connection error:', error);
-//       Alert.alert('Connection Failed', 'Failed to connect to the device');
-      
-//       // Reset device status
-//       setFoundDevices(prev => 
-//         prev.map(d => 
-//           d.id === device.id ? { ...d, status: 'ready' } : d
-//         )
-//       );
-//     }
-//   };
-
-//   const setupNotifications = async (device) => {
-//     try {
-//       // Monitor TX characteristic for incoming data (sensor readings and mesh updates)
-//       await device.monitorCharacteristicForService(
-//         UART_SERVICE_UUID,
-//         UART_TX_CHARACTERISTIC_UUID,
-//         (error, characteristic) => {
-//           if (error) {
-//             console.error('Notification error:', error);
-//             return;
-//           }
-          
-//           if (characteristic?.value) {
-//             const data = characteristic.value;
-//             const decodedData = Buffer.from(data, 'base64').toString('utf-8');
-//             console.log('Received data:', decodedData);
-            
-//             // Parse the incoming data
-//             try {
-//               const parsedData = JSON.parse(decodedData);
-//               handleIncomingData(parsedData);
-//             } catch (e) {
-//               // If it's not JSON, treat it as regular sensor data
-//               setSensorData(decodedData);
-//             }
-//           }
-//         }
-//       );
-
-//       console.log('Notifications setup complete');
-
-//     } catch (error) {
-//       console.error('Notification setup error:', error);
-//     }
-//   };
-
-//   const handleIncomingData = (data) => {
-//     // Handle different types of incoming data from LoRa mesh
-//     if (data.type === 'mesh_update') {
-//       // Update mesh nodes information
-//       setMeshNodes(data.nodes || []);
-//     } else if (data.type === 'race_state') {
-//       setRaceState(data.state);
-//     } else if (data.type === 'node_detection') {
-//       setNodeDetections(prev => ({
-//         ...prev,
-//         [data.nodeId]: data.detectionTime
-//       }));
-//     } else if (data.type === 'node_registered') {
-//       // Add new node to mesh
-//       setMeshNodes(prev => {
-//         const exists = prev.some(node => node.id === data.nodeId);
-//         if (!exists) {
-//           return [...prev, {
-//             id: data.nodeId,
-//             name: `Node ${data.nodeId}`,
-//             status: 'active',
-//             lastSeen: new Date().toISOString(),
-//             signalStrength: -70 // Default value
-//           }];
-//         }
-//         return prev;
-//       });
-//     }
-//   };
-
-//   const sendDataToDevice = async (data) => {
-//     if (!connectedDevice) {
-//       Alert.alert('Not Connected', 'No device connected');
-//       return;
-//     }
-
-//     try {
-//       await connectedDevice.writeCharacteristicWithResponseForService(
-//         UART_SERVICE_UUID,
-//         UART_RX_CHARACTERISTIC_UUID,
-//         Buffer.from(data).toString('base64')
-//       );
-//       console.log('Data sent to device:', data);
-//     } catch (error) {
-//       console.error('Send data error:', error);
-//       Alert.alert('Send Failed', 'Failed to send data to device');
-//     }
-//   };
-
-//   const sendCommand = async (command) => {
-//     const commandData = JSON.stringify({
-//       type: 'command',
-//       command: command
-//     });
-//     await sendDataToDevice(commandData);
-//   };
-
-//   const disconnectDevice = async () => {
-//     if (connectedDevice) {
-//       try {
-//         await connectedDevice.cancelConnection();
-//         setConnectedDevice(null);
-//         setSensorData('');
-//         setMeshNodes([]);
-//         setRaceState('IDLE');
-//         setNodeDetections({});
-        
-//         // Reset device status
-//         setFoundDevices(prev => 
-//           prev.map(d => 
-//             d.id === connectedDevice.id ? { ...d, status: 'ready' } : d
-//           )
-//         );
-        
-//         Alert.alert('Disconnected', 'Device disconnected successfully');
-//       } catch (error) {
-//         console.error('Disconnection error:', error);
-//       }
-//     }
-//   };
-
-//   const getStatusColor = (status) => {
-//     switch (status) {
-//       case 'ready': return COLORS.successGreen;
-//       case 'connecting': return COLORS.terracotta;
-//       case 'connected': return COLORS.oasisGreen;
-//       case 'active': return COLORS.oasisGreen;
-//       case 'inactive': return COLORS.offlineGray;
-//       default: return COLORS.offlineGray;
-//     }
-//   };
-
-//   const getStatusText = (status) => {
-//     switch (status) {
-//       case 'ready': return 'Ready to Connect';
-//       case 'connecting': return 'Connecting...';
-//       case 'connected': return 'Connected';
-//       case 'active': return 'Active';
-//       case 'inactive': return 'Inactive';
-//       default: return 'Unknown';
-//     }
-//   };
-
-//   const getSignalStrength = (rssi) => {
-//     // Convert RSSI to percentage (rough approximation)
-//     if (rssi >= -50) return 100;
-//     if (rssi <= -100) return 0;
-//     return Math.round(((rssi + 100) / 50) * 100);
-//   };
-
-//   const ScanningIndicator = () => (
-//     <View style={localStyles.scanningSection}>
-//       <ActivityIndicator size="large" color={COLORS.cobaltBlue} />
-//       <Text style={localStyles.scanningText}>Scanning for LoRaBLE Devices...</Text>
-//       <Text style={localStyles.scanningSubtext}>
-//         Looking for devices with "LoRaBLE" in their name
-//       </Text>
-//     </View>
-//   );
-
-//   const DeviceList = () => (
-//     <View style={localStyles.devicesSection}>
-//       <Text style={localStyles.sectionTitle}>Found LoRaBLE Devices</Text>
-//       {foundDevices.map((device) => (
-//         <TouchableOpacity
-//           key={device.id}
-//           style={[
-//             localStyles.deviceItem,
-//             device.status === 'connected' && localStyles.connectedDevice
-//           ]}
-//           onPress={() => connectToDevice(device)}
-//           disabled={device.status === 'connecting' || device.status === 'connected'}
-//         >
-//           <View style={localStyles.deviceInfo}>
-//             <Text style={localStyles.deviceName}>{device.name}</Text>
-//             <View style={localStyles.deviceStatus}>
-//               <View 
-//                 style={[
-//                   localStyles.statusDot, 
-//                   { backgroundColor: getStatusColor(device.status) }
-//                 ]} 
-//               />
-//               <Text style={localStyles.statusText}>
-//                 {getStatusText(device.status)}
-//               </Text>
-//             </View>
-//           </View>
-//           <View style={localStyles.signalStrength}>
-//             <View style={localStyles.signalBarContainer}>
-//               {[1, 2, 3, 4].map((bar) => (
-//                 <View
-//                   key={bar}
-//                   style={[
-//                     localStyles.signalBar,
-//                     localStyles[`signalBar${bar}`],
-//                     {
-//                       backgroundColor: bar * 25 <= getSignalStrength(device.signalStrength) 
-//                         ? COLORS.cobaltBlue 
-//                         : COLORS.warmStone,
-//                     },
-//                   ]}
-//                 />
-//               ))}
-//             </View>
-//             <Text style={localStyles.signalText}>{device.signalStrength} dBm</Text>
-//           </View>
-//         </TouchableOpacity>
-//       ))}
-//     </View>
-//   );
-
-//   const MeshNetworkSection = () => (
-//     <View style={localStyles.meshSection}>
-//       <Text style={localStyles.sectionTitle}>LoRa Mesh Network</Text>
-//       <View style={localStyles.raceInfo}>
-//         <Text style={localStyles.raceState}>
-//           Race State: <Text style={localStyles.raceStateValue}>{raceState}</Text>
-//         </Text>
-//         <Text style={localStyles.nodeCount}>
-//           Connected Nodes: {meshNodes.length}
-//         </Text>
-//       </View>
-      
-//       {meshNodes.length > 0 ? (
-//         <View style={localStyles.meshNodesList}>
-//           {meshNodes.map((node) => (
-//             <View key={node.id} style={localStyles.meshNodeItem}>
-//               <View style={localStyles.meshNodeInfo}>
-//                 <Text style={localStyles.meshNodeName}>{node.name}</Text>
-//                 <View style={localStyles.meshNodeStatus}>
-//                   <View 
-//                     style={[
-//                       localStyles.statusDot, 
-//                       { backgroundColor: getStatusColor(node.status) }
-//                     ]} 
-//                   />
-//                   <Text style={localStyles.meshNodeStatusText}>
-//                     {getStatusText(node.status)}
-//                   </Text>
-//                 </View>
-//                 {nodeDetections[node.id] && (
-//                   <Text style={localStyles.detectionTime}>
-//                     Detection: {nodeDetections[node.id]}
-//                   </Text>
-//                 )}
-//               </View>
-//               <View style={localStyles.signalStrength}>
-//                 <View style={localStyles.signalBarContainer}>
-//                   {[1, 2, 3, 4].map((bar) => (
-//                     <View
-//                       key={bar}
-//                       style={[
-//                         localStyles.signalBar,
-//                         localStyles[`signalBar${bar}`],
-//                         {
-//                           backgroundColor: bar * 25 <= getSignalStrength(node.signalStrength) 
-//                             ? COLORS.cobaltBlue 
-//                             : COLORS.warmStone,
-//                         },
-//                       ]}
-//                     />
-//                   ))}
-//                 </View>
-//                 <Text style={localStyles.signalText}>{node.signalStrength} dBm</Text>
-//               </View>
-//             </View>
-//           ))}
-//         </View>
-//       ) : (
-//         <Text style={localStyles.noNodesText}>No mesh nodes connected yet</Text>
-//       )}
-//     </View>
-//   );
-
-//   const ConnectedDeviceInfo = () => (
-//     <View style={localStyles.connectedSection}>
-//       <Text style={localStyles.sectionTitle}>Connected Device</Text>
-//       <View style={localStyles.connectedDeviceInfo}>
-//         <Text style={localStyles.connectedDeviceName}>
-//           {connectedDevice?.name || 'LoRaBLE Device'}
-//         </Text>
-//         <Text style={localStyles.sensorData}>
-//           {sensorData || 'Waiting for data...'}
-//         </Text>
-//         <TouchableOpacity 
-//           style={localStyles.disconnectButton}
-//           onPress={disconnectDevice}
-//         >
-//           <Text style={localStyles.disconnectButtonText}>DISCONNECT</Text>
-//         </TouchableOpacity>
-//       </View>
-//     </View>
-//   );
-
-//   const InstructionsSection = () => (
-//     <View style={localStyles.instructionsSection}>
-//       <Text style={localStyles.instructionsTitle}>
-//         Connection Instructions
-//       </Text>
-//       <Text style={localStyles.instructionsText}>
-//         • Ensure your LoRaBLE device is powered on{'\n'}
-//         • Make sure Bluetooth is enabled on your phone{'\n'}
-//         • The device should appear as "LoRaBLE"{'\n'}
-//         • Mesh network nodes will appear automatically once connected{'\n'}
-//         • Race state and detections will update in real-time
-//       </Text>
-//     </View>
-//   );
-
-//   return (
-//     <View style={styles.screen}>
-//       <StatusBar backgroundColor={COLORS.desertSand} barStyle="dark-content" />
-      
-//       {/* Header */}
-//       <View style={localStyles.header}>
-//         <Text style={localStyles.mainTitle}>CONNECT LoRaBLE MESH</Text>
-//       </View>
-
-//       <ScrollView 
-//         style={localStyles.scrollView}
-//         showsVerticalScrollIndicator={false}
-//         contentContainerStyle={localStyles.scrollContent}
-//       >
-//         {/* Start Scan Button */}
-//         {!isScanning && foundDevices.length === 0 && !connectedDevice && (
-//           <TouchableOpacity 
-//             style={localStyles.scanButton}
-//             onPress={startScanning}
-//           >
-//             <Text style={localStyles.scanButtonText}>START SCAN</Text>
-//           </TouchableOpacity>
-//         )}
-
-//         {/* Scanning Section */}
-//         {isScanning && <ScanningIndicator />}
-
-//         {/* Divider */}
-//         {(isScanning || foundDevices.length > 0) && (
-//           <View style={localStyles.divider} />
-//         )}
-
-//         {/* Connected Device Info */}
-//         {connectedDevice && (
-//           <>
-//             <ConnectedDeviceInfo />
-//             <View style={localStyles.divider} />
-//           </>
-//         )}
-
-//         {/* Mesh Network Section */}
-//         {connectedDevice && (
-//           <>
-//             <MeshNetworkSection />
-//             <View style={localStyles.divider} />
-//           </>
-//         )}
-
-//         {/* Found Devices */}
-//         {!isScanning && foundDevices.length > 0 && !connectedDevice && (
-//           <>
-//             <DeviceList />
-//             <View style={localStyles.divider} />
-//           </>
-//         )}
-
-//         {/* Instructions */}
-//         <InstructionsSection />
-
-//         {/* Action Buttons */}
-//         <View style={localStyles.buttonsContainer}>
-//           {(isScanning || foundDevices.length > 0) && !connectedDevice && (
-//             <TouchableOpacity 
-//               style={localStyles.cancelButton}
-//               onPress={handleCancelScan}
-//             >
-//               <Text style={localStyles.cancelButtonText}>CANCEL SCAN</Text>
-//             </TouchableOpacity>
-//           )}
-          
-//           {connectedDevice && (
-//             <View style={localStyles.commandButtons}>
-//               <TouchableOpacity 
-//                 style={localStyles.sendDataButton}
-//                 onPress={() => sendCommand('START')}
-//               >
-//                 <Text style={localStyles.sendDataButtonText}>START RACE</Text>
-//               </TouchableOpacity>
-//               <TouchableOpacity 
-//                 style={localStyles.sendDataButton}
-//                 onPress={() => sendCommand('STOP')}
-//               >
-//                 <Text style={localStyles.sendDataButtonText}>STOP RACE</Text>
-//               </TouchableOpacity>
-//               <TouchableOpacity 
-//                 style={localStyles.sendDataButton}
-//                 onPress={() => sendCommand('RESET')}
-//               >
-//                 <Text style={localStyles.sendDataButtonText}>RESET</Text>
-//               </TouchableOpacity>
-//             </View>
-//           )}
-//         </View>
-//       </ScrollView>
-//     </View>
-//   );
-// };
-
-// const localStyles = StyleSheet.create({
-//   header: {
-//     marginBottom: 24,
-//     alignItems: 'center',
-//   },
-//   mainTitle: {
-//     fontFamily: FONTS.orbitronBold,
-//     fontSize: 24,
-//     color: COLORS.charcoal,
-//     textAlign: 'center',
-//   },
-//   scrollView: {
-//     flex: 1,
-//   },
-//   scrollContent: {
-//     flexGrow: 1,
-//     paddingHorizontal: 16,
-//   },
-//   scanButton: {
-//     backgroundColor: COLORS.cobaltBlue,
-//     paddingVertical: 16,
-//     borderRadius: 12,
-//     alignItems: 'center',
-//     marginBottom: 24,
-//   },
-//   scanButtonText: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.desertSand,
-//     textTransform: 'uppercase',
-//   },
-//   scanningSection: {
-//     alignItems: 'center',
-//     paddingVertical: 40,
-//   },
-//   scanningText: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 18,
-//     color: COLORS.charcoal,
-//     marginTop: 16,
-//   },
-//   scanningSubtext: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 14,
-//     color: COLORS.charcoal + '80',
-//     marginTop: 8,
-//     textAlign: 'center',
-//   },
-//   divider: {
-//     height: 1,
-//     backgroundColor: COLORS.charcoal + '20',
-//     marginVertical: 24,
-//   },
-//   devicesSection: {
-//     marginBottom: 16,
-//   },
-//   connectedSection: {
-//     marginBottom: 16,
-//   },
-//   meshSection: {
-//     marginBottom: 16,
-//   },
-//   sectionTitle: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 20,
-//     color: COLORS.charcoal,
-//     marginBottom: 16,
-//   },
-//   deviceItem: {
-//     backgroundColor: COLORS.warmStone,
-//     padding: 16,
-//     borderRadius: 12,
-//     marginBottom: 12,
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//     borderWidth: 1,
-//     borderColor: COLORS.charcoal + '20',
-//   },
-//   connectedDevice: {
-//     borderColor: COLORS.oasisGreen,
-//     borderWidth: 2,
-//   },
-//   deviceInfo: {
-//     flex: 1,
-//   },
-//   deviceName: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.charcoal,
-//     marginBottom: 8,
-//   },
-//   deviceStatus: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//   },
-//   statusDot: {
-//     width: 8,
-//     height: 8,
-//     borderRadius: 4,
-//     marginRight: 8,
-//   },
-//   statusText: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 14,
-//     color: COLORS.charcoal,
-//   },
-//   signalStrength: {
-//     alignItems: 'center',
-//     marginLeft: 16,
-//   },
-//   signalBarContainer: {
-//     flexDirection: 'row',
-//     alignItems: 'flex-end',
-//     height: 20,
-//     marginBottom: 4,
-//   },
-//   signalBar: {
-//     width: 4,
-//     marginHorizontal: 1,
-//     borderRadius: 2,
-//   },
-//   signalBar1: {
-//     height: 6,
-//   },
-//   signalBar2: {
-//     height: 10,
-//   },
-//   signalBar3: {
-//     height: 14,
-//   },
-//   signalBar4: {
-//     height: 18,
-//   },
-//   signalText: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 12,
-//     color: COLORS.charcoal + '80',
-//   },
-//   connectedDeviceInfo: {
-//     backgroundColor: COLORS.warmStone,
-//     padding: 20,
-//     borderRadius: 12,
-//     alignItems: 'center',
-//   },
-//   connectedDeviceName: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 18,
-//     color: COLORS.charcoal,
-//     marginBottom: 12,
-//   },
-//   sensorData: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 16,
-//     color: COLORS.cobaltBlue,
-//     marginBottom: 16,
-//     textAlign: 'center',
-//   },
-//   meshNodesList: {
-//     marginTop: 12,
-//   },
-//   meshNodeItem: {
-//     backgroundColor: COLORS.warmStone,
-//     padding: 16,
-//     borderRadius: 12,
-//     marginBottom: 8,
-//     flexDirection: 'row',
-//     justifyContent: 'space-between',
-//     alignItems: 'center',
-//   },
-//   meshNodeInfo: {
-//     flex: 1,
-//   },
-//   meshNodeName: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.charcoal,
-//     marginBottom: 4,
-//   },
-//   meshNodeStatus: {
-//     flexDirection: 'row',
-//     alignItems: 'center',
-//     marginBottom: 4,
-//   },
-//   meshNodeStatusText: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 14,
-//     color: COLORS.charcoal,
-//   },
-//   detectionTime: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 12,
-//     color: COLORS.oasisGreen,
-//   },
-//   raceInfo: {
-//     backgroundColor: COLORS.warmStone,
-//     padding: 16,
-//     borderRadius: 12,
-//     marginBottom: 16,
-//   },
-//   raceState: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.charcoal,
-//     marginBottom: 8,
-//   },
-//   raceStateValue: {
-//     color: COLORS.cobaltBlue,
-//   },
-//   nodeCount: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 14,
-//     color: COLORS.charcoal,
-//   },
-//   noNodesText: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 14,
-//     color: COLORS.charcoal + '80',
-//     textAlign: 'center',
-//     padding: 20,
-//   },
-//   instructionsSection: {
-//     backgroundColor: COLORS.warmStone,
-//     padding: 20,
-//     borderRadius: 12,
-//     marginBottom: 24,
-//   },
-//   instructionsTitle: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.charcoal,
-//     marginBottom: 12,
-//   },
-//   instructionsText: {
-//     fontFamily: FONTS.montserratRegular,
-//     fontSize: 14,
-//     color: COLORS.charcoal + '80',
-//     lineHeight: 20,
-//   },
-//   buttonsContainer: {
-//     gap: 12,
-//   },
-//   commandButtons: {
-//     gap: 12,
-//   },
-//   cancelButton: {
-//     backgroundColor: COLORS.terracotta,
-//     paddingVertical: 16,
-//     borderRadius: 12,
-//     alignItems: 'center',
-//   },
-//   cancelButtonText: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.desertSand,
-//     textTransform: 'uppercase',
-//   },
-//   disconnectButton: {
-//     backgroundColor: COLORS.terracotta,
-//     paddingVertical: 12,
-//     paddingHorizontal: 24,
-//     borderRadius: 8,
-//   },
-//   disconnectButtonText: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 14,
-//     color: COLORS.desertSand,
-//     textTransform: 'uppercase',
-//   },
-//   sendDataButton: {
-//     backgroundColor: COLORS.oasisGreen,
-//     paddingVertical: 16,
-//     borderRadius: 12,
-//     alignItems: 'center',
-//   },
-//   sendDataButtonText: {
-//     fontFamily: FONTS.montserratBold,
-//     fontSize: 16,
-//     color: COLORS.charcoal,
-//     textTransform: 'uppercase',
-//   },
-// });
-
-// export default LoRaConnectionScreen;
-
 // LoRaConnectionScreen.js
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -872,6 +20,7 @@ import { COLORS, FONTS, styles } from './theme';
 import { useRace } from '../src/context/RaceContext';
 
 // UUIDs (matching FalconRace-Master Arduino)
+// (Keep only one definition, remove duplicates below)
 const UART_SERVICE_UUID = '00001234-0000-1000-8000-00805f9b34fb';
 const UART_TX_CHARACTERISTIC_UUID = '00001235-0000-1000-8000-00805f9b34fb'; // Notify
 const UART_RX_CHARACTERISTIC_UUID = '00001236-0000-1000-8000-00805f9b34fb'; // Write
@@ -884,6 +33,7 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+// Main component definition (keep only one)
 const LoRaConnectionScreen = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [foundDevices, setFoundDevices] = useState([]);
@@ -1076,7 +226,8 @@ const LoRaConnectionScreen = () => {
 
     manager.startDeviceScan(null, null, (error, device) => {
       if (error) {
-        console.error('Scan error:', error);
+        console.error('Scan error:', error, 'Reason:', error?.reason);
+        Alert.alert('Scan Error', error?.reason ? String(error.reason) : String(error));
         setIsScanning(false);
         return;
       }
@@ -1119,6 +270,13 @@ const LoRaConnectionScreen = () => {
     try {
       const connected = await devWrap.device.connect();
       await connected.discoverAllServicesAndCharacteristics();
+      // Request MTU 128 for larger packets
+      try {
+        await connected.requestMTU(128);
+        console.log('✅ MTU 128 requested');
+      } catch (mtuErr) {
+        console.warn('MTU request failed', mtuErr);
+      }
 
       setConnectedDevice(connected);
       setFoundDevices(prev => prev.map(d => d.id === devWrap.id ? { ...d, status: 'connected' } : d));
@@ -1128,8 +286,8 @@ const LoRaConnectionScreen = () => {
 
       Alert.alert('Connected', `Connected to ${devWrap.name}`);
     } catch (err) {
-      console.error('Connection error:', err);
-      Alert.alert('Connection Failed', String(err.message || err));
+      console.error('Connection error:', err, 'Reason:', err?.reason);
+      Alert.alert('Connection Failed', err?.reason ? String(err.reason) : String(err.message || err));
       setFoundDevices(prev => prev.map(d => d.id === devWrap.id ? { ...d, status: 'ready' } : d));
     } finally {
       setIsBusy(false);
@@ -1142,7 +300,7 @@ const LoRaConnectionScreen = () => {
     try {
       await connectedDevice.cancelConnection();
     } catch (e) {
-      console.warn('Disconnect error', e);
+      console.warn('Disconnect error', e, 'Reason:', e?.reason);
     } finally {
       setConnectedDevice(null);
       setMasterNode(null);
@@ -1204,8 +362,35 @@ const LoRaConnectionScreen = () => {
   const raceContext = useRace();
 
   const handleIncomingData = (msg) => {
+        // Debug: log every incoming message
+        console.log('📨 Incoming BLE message:', JSON.stringify(msg));
+        if (msg.type === 'system_status' || msg.type === 'status') {
+          console.log('✅ Master status received:', JSON.stringify(msg));
+        }
     const type = msg.type;
     const src = msg.src ?? msg.source ?? null;
+
+    // If type is missing but nodes array exists, treat as status
+    if (!type && Array.isArray(msg.nodes)) {
+      // Node roster
+      setMasterNode(prev => ({
+        ...prev,
+        lastSeen: new Date().toISOString(),
+        timestamp: msg.utc || new Date().toISOString(),
+      }));
+      setSlaveNodes(prev => {
+        const updated = {};
+        msg.nodes.forEach(n => {
+          const nodeIdStr = typeof n === 'object' ? String(n.id) : String(n);
+          updated[nodeIdStr] = {
+            nodeId: nodeIdStr,
+            lastSeen: new Date().toISOString(),
+          };
+        });
+        return updated;
+      });
+      return;
+    }
 
     switch (type) {
       case 'system_status': {
@@ -1232,24 +417,26 @@ const LoRaConnectionScreen = () => {
         } catch {}
         // Node roster
         if (Array.isArray(msg.nodes)) {
-          msg.nodes.forEach(n => {
-            const nodeIdStr = String(n.id);
-            setSlaveNodes(prev => ({
-              ...prev,
-              [nodeIdStr]: {
-                ...prev[nodeIdStr],
+          // Merge new node IDs into slaveNodes, update lastSeen
+          setSlaveNodes(prev => {
+            const updated = { ...prev };
+            msg.nodes.forEach(n => {
+              const nodeIdStr = typeof n === 'object' ? String(n.id) : String(n);
+              updated[nodeIdStr] = {
                 nodeId: nodeIdStr,
-                lastSeen: new Date(Date.now() - (n.last_seen_ms || 0)).toISOString(),
-                cameraAlive: n.camera_alive,
+                lastSeen: new Date().toISOString(),
+              };
+            });
+            // Remove nodes not present in msg.nodes
+            Object.keys(updated).forEach(id => {
+              if (!msg.nodes.some(n => (typeof n === 'object' ? String(n.id) : String(n)) === id)) {
+                delete updated[id];
               }
-            }));
-            try {
-              raceContext.dispatch({
-                type: 'UPDATE_NODE',
-                payload: { id: nodeIdStr, cameraPresent: n.camera_alive }
-              });
-            } catch {}
+            });
+            return updated;
           });
+        } else {
+          setSlaveNodes({});
         }
         break;
       }
@@ -1417,7 +604,8 @@ const LoRaConnectionScreen = () => {
         UART_TX_CHARACTERISTIC_UUID,
         (error, characteristic) => {
           if (error) {
-            console.error('Notification error:', error);
+            console.error('Notification error:', error, 'Reason:', error?.reason);
+            Alert.alert('Notification Error', error?.reason ? String(error.reason) : String(error));
             return;
           }
           if (!characteristic?.value) return;
@@ -1445,8 +633,8 @@ const LoRaConnectionScreen = () => {
       );
       console.log('Data sent to device:', data);
     } catch (error) {
-      console.error('Send data error:', error);
-      Alert.alert('Send Failed', 'Failed to send data to device');
+      console.error('Send data error:', error, 'Reason:', error?.reason);
+      Alert.alert('Send Failed', error?.reason ? String(error.reason) : 'Failed to send data to device');
     }
   };
 
@@ -1474,16 +662,75 @@ const LoRaConnectionScreen = () => {
   };
 
   /* ------------------ UI helpers ------------------ */
+
+  // Send BLE 'get_status' command
+  const sendGetStatus = async () => {
+    try {
+      await sendDataToDevice('status');
+      Alert.alert('Status Requested', 'get_status command sent to master node.');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to send get_status command');
+    }
+  }
   const toggleExpand = (id) => {
     setIsExpanded(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
+  // --- Replace mesh/slave node list with this ---
+  const MeshNetworkSection = () => {
+    const { state: raceState } = useRace();
+    const nodes = raceState.nodes || {};
+    // Helper to sort nodes by ID
+    const activeNodesList = Object.values(nodes).sort((a, b) => Number(a.id) - Number(b.id));
+
+    return (
+      <View style={localStyles.meshSection}>
+        <Text style={localStyles.sectionTitle}>LoRa Mesh Network</Text>
+        {activeNodesList.length === 0 ? (
+          <Text style={localStyles.noNodesText}>Waiting for heartbeats...</Text>
+        ) : (
+          activeNodesList.map((node) => (
+            <View key={node.id} style={localStyles.meshNodeItem}>
+              <View style={localStyles.meshNodeInfo}>
+                <Text style={localStyles.meshNodeName}>Node {node.id}</Text>
+                <View style={localStyles.meshNodeStatus}>
+                  <View style={[
+                    localStyles.statusDot,
+                    { backgroundColor: (Date.now() - node.lastSeen < 60000) ? COLORS.oasisGreen : COLORS.terracotta }
+                  ]} />
+                  <Text style={localStyles.meshNodeStatusText}>
+                    {(Date.now() - node.lastSeen < 60000) ? 'Online' : 'Offline'}
+                  </Text>
+                </View>
+                <Text style={localStyles.detectionTime}>
+                  Last seen: {node.lastSeen ? new Date(node.lastSeen).toLocaleTimeString() : '-'}
+                </Text>
+              </View>
+            </View>
+          ))
+        )}
+      </View>
+    );
+  };
+
   /* ------------------ Render ------------------ */
+  // Debug panel: show last received BLE message
+  const lastRawMsg = rawMessages.length > 0 ? rawMessages[0].raw : null;
+
   return (
     <View style={styles.screen}>
       <StatusBar backgroundColor={COLORS.desertSand} barStyle="dark-content" />
       <View style={localStyles.header}>
         <Text style={localStyles.mainTitle}>FalconRace — Master & Slave Monitor</Text>
+      </View>
+
+      {/* Debug Panel - visible in UI */}
+      <View style={{ backgroundColor: '#FFFDE7', borderColor: '#FFD600', borderWidth: 2, borderRadius: 8, margin: 12, padding: 10 }}>
+        <Text style={{ color: '#333', fontFamily: FONTS.montserratBold, fontSize: 14 }}>Debug: Last BLE Message</Text>
+        <Text style={{ color: '#444', fontFamily: FONTS.orbitronBold, fontSize: 12 }}>{lastRawMsg ? lastRawMsg : 'No message received yet.'}</Text>
+        <TouchableOpacity style={{ marginTop: 8, backgroundColor: '#F97316', padding: 6, borderRadius: 6, alignSelf: 'flex-start' }} onPress={() => setRawMessages([])}>
+          <Text style={{ color: '#fff', fontFamily: FONTS.montserratBold }}>Clear Recent Raw Messages</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView style={localStyles.scrollView} contentContainerStyle={localStyles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -1550,17 +797,22 @@ const LoRaConnectionScreen = () => {
         {/* Master Node */}
         <View style={localStyles.masterSection}>
           <Text style={localStyles.sectionTitle}>Master Node</Text>
-          {masterNode ? (
+          {/* Get Status Button */}
+          <TouchableOpacity style={localStyles.sendButton} onPress={sendGetStatus}>
+            <Text style={localStyles.sendButtonText}>GET STATUS</Text>
+          </TouchableOpacity>
+          {(connectedDevice || masterNode) ? (
             <View style={localStyles.nodeCard}>
               <View style={localStyles.nodeHeader}>
-                <Text style={localStyles.nodeTitle}>Master ID: {masterNode.id}</Text>
-                <TouchableOpacity onPress={() => saveNode(masterNode.id)} style={localStyles.saveBtn}>
-                  <Text style={localStyles.saveBtnText}>Save</Text>
-                </TouchableOpacity>
+                <Text style={localStyles.nodeTitle}>Master ID: {masterNode?.id || connectedDevice?.id || 'Connected'}</Text>
+                {masterNode?.id && (
+                  <TouchableOpacity onPress={() => saveNode(masterNode.id)} style={localStyles.saveBtn}>
+                    <Text style={localStyles.saveBtnText}>Save</Text>
+                  </TouchableOpacity>
+                )}
               </View>
-
-              <Text style={localStyles.smallText}>Last Seen: {masterNode.lastSeen}</Text>
-              {masterNode.lastMsg && (
+              <Text style={localStyles.smallText}>Last Seen: {masterNode?.lastSeen || 'Connected'}</Text>
+              {masterNode?.lastMsg && (
                 <>
                   <Text style={localStyles.subTitle}>Last Message</Text>
                   <Text style={localStyles.monoText}>{JSON.stringify(masterNode.lastMsg, null, 2)}</Text>
@@ -1572,42 +824,23 @@ const LoRaConnectionScreen = () => {
           )}
         </View>
 
-        {/* Slave Nodes */}
+        {/* Online Nodes */}
         <View style={localStyles.slavesSection}>
-          <Text style={localStyles.sectionTitle}>Slave Nodes ({Object.keys(slaveNodes).length})</Text>
-          {Object.values(slaveNodes).length > 0 ? (
-            Object.values(slaveNodes).map((node) => (
-              <View key={String(node.nodeId)} style={localStyles.nodeCard}>
+          <Text style={localStyles.sectionTitle}>Online Nodes ({Object.keys(slaveNodes).length})</Text>
+          {Object.keys(slaveNodes).length > 0 ? (
+            Object.keys(slaveNodes).map((nodeId) => (
+              <View key={nodeId} style={localStyles.nodeCard}>
                 <View style={localStyles.nodeHeader}>
-                  <Text style={localStyles.nodeTitle}>Node {node.nodeId}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    <TouchableOpacity onPress={() => saveNode(node.nodeId)} style={localStyles.saveBtn}>
-                      <Text style={localStyles.saveBtnText}>Save</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => toggleExpand(node.nodeId)} style={[localStyles.expandBtn]}>
-                      <Text style={localStyles.expandBtnText}>{isExpanded[node.nodeId] ? 'Hide' : 'Raw'}</Text>
-                    </TouchableOpacity>
-                  </View>
+                  <Text style={localStyles.nodeTitle}>Node {nodeId} Online</Text>
                 </View>
-
                 <View style={localStyles.nodeBody}>
-                  <Text style={localStyles.smallText}>Master: {node.masterId ?? '-'}</Text>
-                  <Text style={localStyles.smallText}>Last Seen: {node.lastSeen}</Text>
-                  <Text style={localStyles.smallText}>RSSI: {node.rssi ?? 'N/A'}</Text>
-                  <Text style={localStyles.smallText}>Battery: {node.battery ?? 'N/A'}</Text>
-                  <Text style={localStyles.subTitle}>Payload:</Text>
-                  <Text style={localStyles.monoText}>{JSON.stringify(node.lastMsg, null, 2)}</Text>
-
-                  {isExpanded[node.nodeId] && (
-                    <View style={localStyles.rawBox}>
-                      <Text style={localStyles.monoText}>{JSON.stringify(node.lastMsg?.raw ?? node.lastMsg, null, 2)}</Text>
-                    </View>
-                  )}
+                  <Text style={localStyles.smallText}>Node ID: {nodeId}</Text>
+                  <Text style={localStyles.smallText}>Last Seen: {slaveNodes[nodeId].lastSeen}</Text>
                 </View>
               </View>
             ))
           ) : (
-            <Text style={localStyles.noNodesText}>No slave nodes received yet</Text>
+            <Text style={localStyles.noNodesText}>No nodes online</Text>
           )}
         </View>
 
@@ -1646,63 +879,64 @@ const LoRaConnectionScreen = () => {
   );
 };
 
+// Styles (keep only one definition)
 const localStyles = StyleSheet.create({
   header: { marginBottom: 12, alignItems: 'center' },
-  mainTitle: { fontFamily: FONTS.orbitronBold, fontSize: 20, color: COLORS.charcoal },
-  scrollView: { flex: 1 },
+  mainTitle: { fontFamily: FONTS.orbitronBold, fontSize: 20, color: '#111827', fontWeight: '700' },
+  scrollView: { flex: 1, backgroundColor: '#F3F4F6' }, // Paper-white sunlight bg
   scrollContent: { paddingHorizontal: 16, paddingBottom: 80 },
-  scanButton: { backgroundColor: COLORS.cobaltBlue, paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginVertical: 8 },
-  scanButtonText: { fontFamily: FONTS.montserratBold, fontSize: 16, color: COLORS.desertSand },
+  scanButton: { backgroundColor: '#2563EB', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginVertical: 8 }, // Royal blue
+  scanButtonText: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#000', fontWeight: '700' },
   scanningSection: { alignItems: 'center', paddingVertical: 20 },
-  scanningText: { fontFamily: FONTS.montserratRegular, marginTop: 8, color: COLORS.charcoal },
+  scanningText: { fontFamily: FONTS.montserratRegular, marginTop: 8, color: '#111827', fontWeight: '600' },
   devicesSection: { marginVertical: 12 },
-  sectionTitle: { fontFamily: FONTS.montserratBold, fontSize: 18, color: COLORS.charcoal, marginBottom: 8 },
-  deviceItem: { backgroundColor: COLORS.warmStone, padding: 12, borderRadius: 8, marginBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  connectedDevice: { borderColor: COLORS.oasisGreen, borderWidth: 2 },
+  sectionTitle: { fontFamily: FONTS.montserratBold, fontSize: 18, color: '#000', marginBottom: 8, fontWeight: '700', textTransform: 'uppercase' },
+  deviceItem: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 8, marginBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 2, borderColor: '#9CA3AF' },
+  connectedDevice: { borderColor: '#16A34A', borderWidth: 2 }, // Emerald green
   deviceInfo: { flex: 1 },
-  deviceName: { fontFamily: FONTS.montserratBold, fontSize: 16, color: COLORS.charcoal },
+  deviceName: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#111827', fontWeight: '700' },
   deviceStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  statusText: { fontFamily: FONTS.montserratRegular, color: COLORS.charcoal },
-  signalText: { fontFamily: FONTS.montserratRegular, color: COLORS.charcoal + '80' },
-  cancelButton: { backgroundColor: COLORS.terracotta, paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 8 },
-  cancelButtonText: { fontFamily: FONTS.montserratBold, color: COLORS.desertSand },
+  statusText: { fontFamily: FONTS.montserratRegular, color: '#111827', fontWeight: '600' },
+  signalText: { fontFamily: FONTS.montserratRegular, color: '#374151' },
+  cancelButton: { backgroundColor: '#F97316', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 8 }, // Safety orange
+  cancelButtonText: { fontFamily: FONTS.montserratBold, color: '#FFFFFF', fontWeight: '700' },
 
   connectedSection: { marginVertical: 12 },
-  connectedCard: { backgroundColor: COLORS.warmStone, padding: 14, borderRadius: 12 },
-  connectedDeviceName: { fontFamily: FONTS.montserratBold, fontSize: 16, color: COLORS.charcoal },
-  smallText: { fontFamily: FONTS.montserratRegular, fontSize: 13, color: COLORS.charcoal },
+  connectedCard: { backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 2, borderColor: '#9CA3AF' },
+  connectedDeviceName: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#111827', fontWeight: '700' },
+  smallText: { fontFamily: FONTS.montserratRegular, fontSize: 13, color: '#374151' },
   commandButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
-  sendButton: { backgroundColor: COLORS.oasisGreen, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8 },
-  sendButtonText: { fontFamily: FONTS.montserratBold, color: COLORS.charcoal },
-  disconnectBtn: { backgroundColor: COLORS.terracotta, marginTop: 12, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
-  disconnectBtnText: { fontFamily: FONTS.montserratBold, color: COLORS.desertSand },
+  sendButton: { backgroundColor: '#16A34A', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8 }, // Emerald green
+  sendButtonText: { fontFamily: FONTS.montserratBold, color: '#FFFFFF', fontWeight: '700' },
+  disconnectBtn: { backgroundColor: '#F97316', marginTop: 12, paddingVertical: 10, borderRadius: 8, alignItems: 'center' }, // Safety orange
+  disconnectBtnText: { fontFamily: FONTS.montserratBold, color: '#FFFFFF', fontWeight: '700' },
 
   masterSection: { marginVertical: 12 },
-  nodeCard: { backgroundColor: COLORS.warmStone, padding: 12, borderRadius: 10, marginBottom: 10 },
+  nodeCard: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 10, marginBottom: 10, borderWidth: 2, borderColor: '#9CA3AF' },
   nodeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  nodeTitle: { fontFamily: FONTS.montserratBold, fontSize: 16, color: COLORS.charcoal },
-  saveBtn: { backgroundColor: COLORS.cobaltBlue, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 },
-  saveBtnText: { color: COLORS.desertSand, fontFamily: FONTS.montserratBold },
-  expandBtn: { marginLeft: 8, backgroundColor: COLORS.charcoal + '20', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 },
-  expandBtnText: { fontFamily: FONTS.montserratBold },
+  nodeTitle: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#111827', fontWeight: '700' },
+  saveBtn: { backgroundColor: '#2563EB', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 }, // Royal blue
+  saveBtnText: { color: '#FFFFFF', fontFamily: FONTS.montserratBold, fontWeight: '700' },
+  expandBtn: { marginLeft: 8, backgroundColor: '#F3F4F6', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 },
+  expandBtnText: { fontFamily: FONTS.montserratBold, color: '#111827', fontWeight: '700' },
 
   nodeBody: { marginTop: 8 },
-  subTitle: { fontFamily: FONTS.montserratBold, fontSize: 14, marginTop: 8 },
-  monoText: { fontFamily: FONTS.montserratRegular, fontSize: 12, marginTop: 6, color: COLORS.charcoal },
-  rawBox: { marginTop: 8, backgroundColor: '#1111', padding: 8, borderRadius: 6 },
+  subTitle: { fontFamily: FONTS.montserratBold, fontSize: 14, marginTop: 8, color: '#374151', fontWeight: '700', textTransform: 'uppercase' },
+  monoText: { fontFamily: FONTS.orbitronBold, fontSize: 20, marginTop: 6, color: '#000', letterSpacing: 1 }, // Digital watch style
+  rawBox: { marginTop: 8, backgroundColor: '#E5E7EB', padding: 8, borderRadius: 6, borderWidth: 2, borderColor: '#9CA3AF' },
 
   slavesSection: { marginVertical: 12 },
 
   savedSection: { marginVertical: 12 },
-  savedItem: { backgroundColor: COLORS.warmStone, padding: 10, borderRadius: 8, marginBottom: 6, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  removeBtn: { backgroundColor: COLORS.terracotta, paddingVertical: 6, paddingHorizontal: 8, borderRadius: 6 },
-  removeBtnText: { color: COLORS.desertSand, fontFamily: FONTS.montserratBold },
+  savedItem: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 8, marginBottom: 6, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 2, borderColor: '#9CA3AF' },
+  removeBtn: { backgroundColor: '#F97316', paddingVertical: 6, paddingHorizontal: 8, borderRadius: 6 }, // Safety orange
+  removeBtnText: { color: '#FFFFFF', fontFamily: FONTS.montserratBold, fontWeight: '700' },
 
   rawSection: { marginVertical: 12 },
-  rawItem: { backgroundColor: COLORS.warmStone, padding: 8, borderRadius: 8, marginBottom: 6 },
+  rawItem: { backgroundColor: '#FFFFFF', padding: 8, borderRadius: 8, marginBottom: 6, borderWidth: 2, borderColor: '#9CA3AF' },
 
-  noNodesText: { fontFamily: FONTS.montserratRegular, color: COLORS.charcoal + '80' },
+  noNodesText: { fontFamily: FONTS.montserratRegular, color: '#374151' },
 });
 
 export default LoRaConnectionScreen;

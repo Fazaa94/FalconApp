@@ -27,6 +27,41 @@ const initialState = {
 
 const raceReducer = (state, action) => {
   switch (action.type) {
+    case 'PROCESS_NODE_MSG': {
+      // Handles node_msg with nested camera_msg payload
+      const { src, payload, ts_iso } = action.payload;
+      let inner = null;
+      try {
+        inner = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      } catch {
+        inner = payload;
+      }
+      if (inner && inner.type === 'camera_msg' && inner.payload === '101') {
+        // Falcon detected by camera
+        const splitTime = state.currentRace && state.currentRace.startTimeMs
+          ? (ts_iso ? Date.parse(ts_iso) : Date.now()) - state.currentRace.startTimeMs
+          : null;
+        const checkpoint = {
+          nodeId: src,
+          ts_iso: ts_iso || new Date().toISOString(),
+          splitTime,
+          type: 'camera',
+          payload: '101',
+        };
+        return {
+          ...state,
+          detections: [checkpoint, ...state.detections],
+          currentRace: state.currentRace
+            ? {
+                ...state.currentRace,
+                detections: [checkpoint, ...(state.currentRace.detections || [])],
+                checkpoints: [checkpoint, ...(state.currentRace.checkpoints || [])],
+              }
+            : null,
+        };
+      }
+      return state;
+    }
     case 'ADD_MESSAGE':
       return {
         ...state,
@@ -210,7 +245,8 @@ export const RaceProvider = ({ children }) => {
 export const useRace = () => {
   const context = useContext(RaceContext);
   if (!context) {
-    throw new Error('useRace must be used within a RaceProvider');
+    console.error('useRace must be used within a RaceProvider');
+    return { state: {}, dispatch: () => {} };
   }
   return context;
 };

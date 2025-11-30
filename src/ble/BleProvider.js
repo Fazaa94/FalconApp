@@ -171,6 +171,26 @@ export const BleProvider = ({ children }) => {
             payload: { ts: msg.ts_iso ? Date.parse(msg.ts_iso) : Date.now(), raw: msg }
           });
         } catch {}
+
+        // Check for nested camera_msg in payload
+        if (msg.payload) {
+          let inner = null;
+          try {
+            inner = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;
+          } catch {
+            inner = msg.payload;
+          }
+          if (inner && inner.type === 'camera_msg' && inner.payload === '101') {
+            raceContext.dispatch({
+              type: 'PROCESS_NODE_MSG',
+              payload: {
+                src,
+                payload: msg.payload,
+                ts_iso: msg.ts_iso,
+              }
+            });
+          }
+        }
         break;
       }
       case 'gps': {
@@ -340,17 +360,29 @@ export const BleProvider = ({ children }) => {
   const connect = async (deviceId) => {
     try {
       console.log('🔄 Connecting to device:', deviceId);
-      const device = await manager.current.connectToDevice(deviceId);
+      const device = await manager.current.connectToDevice(deviceId).catch((err) => {
+        console.error('❌ BLE connectToDevice error:', err);
+        throw err;
+      });
       console.log('✅ Device connected, discovering services...');
       
-      await device.discoverAllServicesAndCharacteristics();
+      await device.discoverAllServicesAndCharacteristics().catch((err) => {
+        console.error('❌ BLE discoverAllServicesAndCharacteristics error:', err);
+        throw err;
+      });
       console.log('✅ Services discovered');
       
       // Verify required characteristics exist
-      const services = await device.services();
+      const services = await device.services().catch((err) => {
+        console.error('❌ BLE services() error:', err);
+        throw err;
+      });
       const targetService = services.find(s => s.uuid.toLowerCase().includes('1234'));
       if (targetService) {
-        const chars = await targetService.characteristics();
+        const chars = await targetService.characteristics().catch((err) => {
+          console.error('❌ BLE characteristics() error:', err);
+          throw err;
+        });
         console.log('📋 Service 1234 Characteristics:');
         chars.forEach(c => {
           console.log(`   - ${c.uuid} (${c.isReadable ? 'R' : ''}${c.isWritableWithResponse ? 'W' : ''}${c.isNotifiable ? 'N' : ''})`);
@@ -369,7 +401,10 @@ export const BleProvider = ({ children }) => {
       device.onDisconnected(handleDisconnection);
 
       // Start monitoring for notifications
-      await startMonitoring(device);
+      await startMonitoring(device).catch((err) => {
+        console.error('❌ BLE startMonitoring error:', err);
+        throw err;
+      });
       console.log('✅ Monitoring started');
 
       if (raceContext) {
@@ -393,11 +428,9 @@ export const BleProvider = ({ children }) => {
   // Disconnect from device
   const disconnect = async () => {
     console.log('💡 Disconnect called');
-    
     // Clear monitoring subscription first
     if (monitorSubscriptionRef.current) {
       try {
-        console.log('Removing subscription...');
         monitorSubscriptionRef.current.remove();
         console.log('✅ Subscription removed');
       } catch (err) {
@@ -473,13 +506,20 @@ export const BleProvider = ({ children }) => {
         BLE_CONFIG.SERVICE_UUID,
         BLE_CONFIG.RX_CHAR_UUID,
         commandBase64
-      );
+      ).catch((err) => {
+        console.error('❌ BLE writeCharacteristicWithResponseForService error:', err);
+        if (err && err.reason) console.error('❌ BLE error reason:', err.reason);
+        if (err && err.reason) alert('BLE Error: ' + err.reason);
+        throw err;
+      });
 
       console.log('📤 BLE TX:', commandString);
       console.log('✅ Command sent successfully');
       return true;
     } catch (error) {
       console.error('❌ Write error:', error.message);
+      if (error && error.reason) console.error('❌ BLE error reason:', error.reason);
+      if (error && error.reason) alert('BLE Error: ' + error.reason);
       return false;
     }
   };

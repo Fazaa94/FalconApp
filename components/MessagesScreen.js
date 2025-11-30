@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { COLORS, FONTS, styles } from './theme';
 import { useRace } from '../src/context/RaceContext';
+import realm from '../db/database';
 
 const { height } = Dimensions.get('window');
 
@@ -19,7 +20,20 @@ const MessagesScreen = () => {
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [showModal, setShowModal] = useState(false);
 
-  const messages = raceState.messages || [];
+  // Load recent raw messages from Realm
+  const [rawMessages, setRawMessages] = useState([]);
+  React.useEffect(() => {
+    try {
+      const raws = realm.objects('RawMessage').sorted('ts', true).slice(0, 50);
+      const arr = raws.map(r => ({ ts: r.ts.toISOString(), raw: r.raw }));
+      setRawMessages(arr);
+    } catch (e) {
+      setRawMessages([]);
+    }
+  }, []);
+
+  // Use rawMessages instead of raceState.messages
+  const messages = rawMessages || [];
 
   const formatTimestamp = (ts) => {
     const date = new Date(ts);

@@ -1,6 +1,6 @@
 
 
-// import Realm from 'realm';
+import Realm from 'realm';
 
 // class FalconRegistration extends Realm.Object {}
 // FalconRegistration.schema = {
@@ -14,7 +14,7 @@
 //     dateOfBirth: 'string',
 //     weight: 'string',
 //     distinguishingMarks: 'string',
-//     medicalNotes: 'string',
+//     // medicalNotes: 'string',
 //     imagePath: 'string?',
 //     sex: 'string',
 //     spayedNeutered: 'bool',
@@ -254,35 +254,7 @@
 //   primaryKey: 'id',
 // };
 
-// // Update Realm configuration with all schemas
-// export default new Realm({
-//   schema: [
-//     FalconRegistration,
-//     RaceResults,
-//     Checkpoint,
-//     TrainingSession,
-//     PerformanceMetrics,
-//     HeartRateData,
-//     TrainingDrill,
-//     TrainingProgram,
-//     ScheduledSession,
-//     HealthRecord,
-//     NutritionRecord,
-//     PerformanceTrend,
-//     UserSession
-//   ],
-//   schemaVersion: 5, // Increment version
-//   migration: (oldRealm, newRealm) => {
-//     if (oldRealm.schemaVersion < 5) {
-//       // Migration logic for new training schemas
-//       // Initialize any required default values
-//     }
-//   },
-// });
-
-
-// src/database/realm.js
-import Realm from 'realm';
+// Update Realm configuration with all schemas
 
 // Node schema (master/slave nodes)
 class Node extends Realm.Object {}
@@ -320,17 +292,8 @@ FalconRegistration.schema = {
     id: 'string',
     animalId: 'string',
     falconName: 'string',
-    breed: 'string',
-    dateOfBirth: 'string',
     weight: 'string',
-    distinguishingMarks: 'string',
-    medicalNotes: 'string',
     imagePath: 'string?',
-    sex: 'string',
-    spayedNeutered: 'bool',
-    trainingLevel: 'string', // beginner, intermediate, advanced
-    preferredDistance: 'string?', // favorite race distance
-    trainerNotes: 'string?', // general training observations
     synced: { type: 'bool', default: false },
     createdAt: 'date',
   },
@@ -382,6 +345,7 @@ TrainingSession.schema = {
   primaryKey: 'id',
   properties: {
     id: 'string',
+    falconId: 'string',
     animalId: 'string',
     falconName: 'string',
     sessionType: 'string', // speed, endurance, technique, recovery
@@ -564,9 +528,7 @@ UserSession.schema = {
   },
   primaryKey: 'id',
 };
-
-// Update Realm configuration with all schemas
-export default new Realm({
+const realm = new Realm({
   schema: [
     Node,
     RawMessage,
@@ -582,18 +544,22 @@ export default new Realm({
     HealthRecord,
     NutritionRecord,
     PerformanceTrend,
-    UserSession
+    UserSession,
   ],
-  schemaVersion: 6, // Increment version to include Node and RawMessage schemas
+  schemaVersion: 8,
   migration: (oldRealm, newRealm) => {
-    if (oldRealm.schemaVersion < 6) {
-      // Migration logic for new Node and RawMessage schemas
-      // Initialize any required default values for new schemas
-      
-      // For existing data migration if needed
-      if (oldRealm.schemaVersion < 5) {
-        // Previous migration logic for training schemas
+    if (oldRealm.schemaVersion < 8) {
+      // Add falconId to TrainingSession objects if missing
+      const oldObjects = oldRealm.objects('TrainingSession');
+      const newObjects = newRealm.objects('TrainingSession');
+      for (let i = 0; i < newObjects.length; i++) {
+        if (typeof newObjects[i].falconId === 'undefined') {
+          newObjects[i].falconId = '';
+        }
       }
     }
   },
 });
+
+export default realm;
+
