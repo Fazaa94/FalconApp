@@ -33,10 +33,12 @@ export const parseIncoming = (raw) => {
 /**
  * Process a buffered stream of messages
  * Extracts complete JSON objects and remaining text
+ * Handles fragmented JSON by waiting for complete braces
  * @param {object} bufferRef - Reference object with current buffer string
+ * @param {boolean} flush - Force process incomplete messages (for timeout)
  * @returns {array} Array of parsed messages { kind, data, ts_received }
  */
-export const processStream = (bufferRef) => {
+export const processStream = (bufferRef, flush = false) => {
   const messages = [];
   let buffer = bufferRef.current || '';
   let i = 0;
@@ -77,8 +79,24 @@ export const processStream = (bufferRef) => {
           messages.push(parsed);
         }
       } else {
-        // Incomplete JSON, wait for more data
-        break;
+        // Incomplete JSON
+        if (flush) {
+          // Force parse what we have if timeout triggered
+          const jsonStr = buffer.substring(start).trim();
+          try {
+            const data = JSON.parse(jsonStr);
+            messages.push({ kind: 'json', data });
+            i = buffer.length; // Consume all
+          } catch (e) {
+            // Can't parse even with forced flush, keep waiting
+            console.warn('⏳ Incomplete JSON even after timeout:', jsonStr.substring(0, 50) + '...');
+            // Don't advance i, keep the incomplete JSON in buffer for next chunk
+            break;
+          }
+        } else {
+          // Wait for more data
+          break;
+        }
       }
     } else {
       // Plain text message (until next newline or special char)
@@ -99,8 +117,12 @@ export const processStream = (bufferRef) => {
     }
   }
 
-  // Keep unconsumed data in buffer
-  bufferRef.current = buffer.substring(i).trim();
+  // Keep unconsumed data in buffer (only trim if we actually consumed something)
+  // If we didn't consume anything and got no messages, keep the exact buffer as-is
+  if (i > 0) {
+    bufferRef.current = buffer.substring(i).trim();
+  }
+  // If i === 0 and messages.length === 0, keep bufferRef.current unchanged
 
   return messages;
 };

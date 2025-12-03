@@ -19,6 +19,7 @@ export const BleProvider = ({ children }) => {
   const [connectedDevice, setConnectedDevice] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [scannedDevices, setScannedDevices] = useState([]);
+  const [lastBleMessage, setLastBleMessage] = useState(null);
   
   const raceContext = useRace();
   const manager = useRef(getBleManager());
@@ -29,6 +30,7 @@ export const BleProvider = ({ children }) => {
   const reconnectDelayRef = useRef(1000); // Start with 1s
   const reconnectTimeoutRef = useRef(null);
   const messageBufferRef = useRef('');
+  const bufferFlushTimeoutRef = useRef(null); // Timeout for forcing buffer flush
 
   const BLE_CONFIG = {
     SERVICE_UUID: '1234',
@@ -50,8 +52,31 @@ export const BleProvider = ({ children }) => {
   // Types: system_status, race, falcon, motion, gps, camera_status, node_msg, camera_msg
   const handleIncomingTelemetry = (msg) => {
     if (!msg || typeof msg !== 'object') return;
-    const type = msg.type;
+    
+    // Infer message type if not explicitly provided
+    let type = msg.type;
+    if (!type) {
+      if (msg.nodes && msg.count !== undefined) {
+        type = 'system_status';
+        console.log('✅ Inferred type: system_status (nodes detected)');
+      } else if (msg.status && msg.status.includes('Race')) {
+        type = 'race';
+        console.log('✅ Inferred type: race (status message)');
+      } else if (msg.payload === '101' || msg.payload === 'The Falcon Has Been Detected') {
+        type = 'falcon';
+        console.log('✅ Inferred type: falcon (101 payload)');
+      } else if (msg.payload && msg.src) {
+        type = 'detection';
+        console.log('✅ Inferred type: detection (src + payload)');
+      } else {
+        console.warn('⚠️ Could not infer message type');
+      }
+    }
+    
     const src = msg.src ?? msg.source ?? null;
+
+    // Store last message for UI display (e.g., detection messages)
+    setLastBleMessage(JSON.stringify(msg));
 
     // Add raw message record first
     try {
@@ -68,22 +93,25 @@ export const BleProvider = ({ children }) => {
               connected: true,
               race_active: !!msg.race_active,
               battery: msg.battery,
-              ts_received: msg.ts_iso ? Date.parse(msg.ts_iso) : Date.now(),
+              ts_received: msg.utc ? Date.parse(msg.utc) : Date.now(),
               falcon_detected: false,
             }
           });
         } catch {}
-        // Roster nodes
+        
+        // Roster nodes - can be either array of numbers or objects
         if (Array.isArray(msg.nodes)) {
           msg.nodes.forEach(n => {
-            const nodeIdStr = String(n.id);
+            // If n is a number, use it directly; if object, use n.id
+            const nodeId = typeof n === 'object' ? n.id : n;
+            const nodeIdStr = String(nodeId);
             try {
               raceContext.dispatch({
                 type: 'UPDATE_NODE',
                 payload: {
                   id: nodeIdStr,
                   lastSeen: Date.now(),
-                  cameraPresent: n.camera_alive,
+                  cameraPresent: typeof n === 'object' ? n.camera_alive : undefined,
                 }
               });
             } catch {}
@@ -261,7 +289,7 @@ export const BleProvider = ({ children }) => {
 
       // Import parser after BleProvider is created to avoid circular dependency
       const { processStream } = require('../utils/parser');
-      const messages = processStream(messageBufferRef);
+      const messages = processStream(messageBufferRef, false); // Try normal parse first
 
       if (messages.length > 0) {
         console.log('✅ SUCCESSFULLY PARSED', messages.length, 'MESSAGE(S):');
@@ -269,22 +297,59 @@ export const BleProvider = ({ children }) => {
           console.log(`\n📋 MESSAGE #${idx + 1}:`);
           console.log('   Full JSON:', JSON.stringify(msg, null, 2));
         });
+        
+        // Clear timeout since we got complete messages
+        if (bufferFlushTimeoutRef.current) {
+          clearTimeout(bufferFlushTimeoutRef.current);
+          bufferFlushTimeoutRef.current = null;
+        }
+        
+        messages.forEach((msg) => {
+          try {
+            // Extract actual payload (parser returns { kind, data })
+            const payloadObj = (msg.data && typeof msg.data === 'object') ? msg.data : msg;
+            handleIncomingTelemetry(payloadObj);
+            console.log('✅ Message processed successfully');
+          } catch (e) {
+            console.warn('❌ Telemetry handling error:', e.message);
+          }
+        });
       } else {
         console.log('⏳ No complete messages yet (waiting for more data...)');
-      }
-      console.log('═══════════════════════════════════════════════════════\n');
-      
-      messages.forEach((msg) => {
-        try {
-          // Older code expected msg.data; unify by promoting msg if nested
-          const payloadObj = msg.data && typeof msg.data === 'object' && msg.data.type ? msg.data : msg;
-          console.log('🔄 Processing message type:', payloadObj.type);
-          handleIncomingTelemetry(payloadObj);
-          console.log('✅ Message processed successfully');
-        } catch (e) {
-          console.warn('❌ Telemetry handling error:', e.message);
+        
+        // Only set timeout on first incomplete message, don't reset it on each chunk
+        if (!bufferFlushTimeoutRef.current) {
+          bufferFlushTimeoutRef.current = setTimeout(() => {
+            console.log('⏱️ Buffer flush timeout triggered, buffer has:', messageBufferRef.current.length, 'chars');
+            const { processStream } = require('../utils/parser');
+            const flushMessages = processStream(messageBufferRef, true); // Force flush
+            bufferFlushTimeoutRef.current = null; // Clear timeout reference
+            
+            if (flushMessages.length > 0) {
+              console.log('✅ FLUSHED', flushMessages.length, 'MESSAGE(S) from timeout:');
+              flushMessages.forEach((msg, idx) => {
+                console.log(`\n📋 FLUSHED MESSAGE #${idx + 1}:`);
+                console.log('   Full JSON:', JSON.stringify(msg, null, 2));
+              });
+              
+              flushMessages.forEach((msg) => {
+                try {
+                  // Extract actual payload (parser returns { kind, data })
+                  const payloadObj = (msg.data && typeof msg.data === 'object') ? msg.data : msg;
+                  handleIncomingTelemetry(payloadObj);
+                  console.log('✅ Flushed message processed successfully');
+                } catch (e) {
+                  console.warn('❌ Telemetry handling error:', e.message);
+                }
+              });
+            } else {
+              console.warn('⚠️ Buffer flush returned no messages, buffer was:', messageBufferRef.current);
+            }
+          }, 500); // 500ms timeout
         }
-      });
+      }
+      
+      console.log('═══════════════════════════════════════════════════════\n');
     } catch (error) {
       console.error('Error in notification handler:', error);
       // Log but don't crash
@@ -296,20 +361,40 @@ export const BleProvider = ({ children }) => {
     try {
       // Cancel existing subscription if any
       if (monitorSubscriptionRef.current) {
-        monitorSubscriptionRef.current.remove();
+        try {
+          monitorSubscriptionRef.current.remove();
+        } catch (e) {
+          console.warn('Could not remove old subscription:', e.message);
+        }
         monitorSubscriptionRef.current = null;
       }
+
+      // Wrap the notification handler with error boundaries
+      const safeNotificationHandler = (error, characteristic) => {
+        try {
+          if (error) {
+            console.warn('⚠️ Notification subscription error (non-fatal):', error?.message || error);
+            // Don't crash on subscription errors, just log them
+            return;
+          }
+          handleNotification(error, characteristic);
+        } catch (e) {
+          console.error('❌ Fatal error in notification handler:', e);
+          // Still try to keep going
+        }
+      };
 
       const subscription = device.monitorCharacteristicForService(
         BLE_CONFIG.SERVICE_UUID,
         BLE_CONFIG.TX_CHAR_UUID,
-        handleNotification
+        safeNotificationHandler
       );
       
       monitorSubscriptionRef.current = subscription;
       console.log('✅ Monitoring subscription created');
     } catch (error) {
-      console.error('Error starting monitoring:', error);
+      console.error('❌ Error starting monitoring:', error?.message || error);
+      throw error;
     }
   };
 
@@ -318,20 +403,34 @@ export const BleProvider = ({ children }) => {
     try {
       console.log('🔌 Device disconnected:', error?.message || 'Unknown reason');
       
-      // Clear monitoring subscription
+      // Clear monitoring subscription - this may fail if subscription already errored
       if (monitorSubscriptionRef.current) {
         try {
           monitorSubscriptionRef.current.remove();
           console.log('✅ Monitoring subscription removed');
         } catch (err) {
-          console.warn('Could not remove subscription:', err.message);
+          console.warn('⚠️ Could not remove subscription (may already be gone):', err?.message || err);
         }
         monitorSubscriptionRef.current = null;
       }
       
+      // Clear buffer flush timeout if exists
+      if (bufferFlushTimeoutRef.current) {
+        try {
+          clearTimeout(bufferFlushTimeoutRef.current);
+        } catch (err) {
+          console.warn('Could not clear buffer timeout:', err?.message || err);
+        }
+        bufferFlushTimeoutRef.current = null;
+      }
+      
       // Clear reconnect timeout if exists
       if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
+        try {
+          clearTimeout(reconnectTimeoutRef.current);
+        } catch (err) {
+          console.warn('Could not clear reconnect timeout:', err?.message || err);
+        }
         reconnectTimeoutRef.current = null;
       }
 
@@ -340,19 +439,22 @@ export const BleProvider = ({ children }) => {
       messageBufferRef.current = '';
 
       if (raceContext) {
-        raceContext.dispatch({
-          type: 'SET_STATUS',
-          payload: {
-            connected: false,
-            ts_received: Date.now(),
-          },
-        });
+        try {
+          raceContext.dispatch({
+            type: 'SET_STATUS',
+            payload: {
+              connected: false,
+              ts_received: Date.now(),
+            },
+          });
+        } catch (err) {
+          console.warn('Could not dispatch status update:', err?.message || err);
+        }
       }
 
       console.log('✅ Disconnection handled gracefully');
     } catch (err) {
-      console.warn('⚠️ Error in handleDisconnection:', err.message);
-      // Never crash on disconnect - just log and continue
+      console.warn('⚠️ Error in handleDisconnection:', err?.message || err);
     }
   };
 
@@ -371,6 +473,15 @@ export const BleProvider = ({ children }) => {
         throw err;
       });
       console.log('✅ Services discovered');
+      
+      // Negotiate MTU to 128 for larger BLE packets (avoids fragmentation)
+      try {
+        const mtu = await device.requestMTU(128);
+        console.log('✅ MTU negotiated to:', mtu);
+      } catch (mtuError) {
+        console.warn('⚠️ MTU negotiation failed:', mtuError?.message || mtuError);
+        // Continue anyway - MTU negotiation is optional
+      }
       
       // Verify required characteristics exist
       const services = await device.services().catch((err) => {
@@ -602,6 +713,7 @@ export const BleProvider = ({ children }) => {
     connectedDevice,
     scanning,
     scannedDevices,
+    lastBleMessage,
     connect,
     disconnect,
     write,

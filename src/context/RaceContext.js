@@ -156,6 +156,12 @@ const raceReducer = (state, action) => {
         currentRace: null,
       };
 
+    case 'CLEAR_DETECTIONS':
+      return {
+        ...state,
+        detections: [],
+      };
+
     case 'RESET_RACE':
       return {
         ...state,
