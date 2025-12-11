@@ -49,17 +49,22 @@ export const BleProvider = ({ children }) => {
   };
 
   // Unified telemetry handler mapping firmware JSON types
-  // Types: system_status, race, falcon, motion, gps, camera_status, node_msg, camera_msg
+  // Types: system_status, race, falcon, motion, gps, camera_status, node_msg, camera_msg, heartbeat, status
   const handleIncomingTelemetry = (msg) => {
     if (!msg || typeof msg !== 'object') return;
     
     // Infer message type if not explicitly provided
     let type = msg.type;
     if (!type) {
-      if (msg.nodes && msg.count !== undefined) {
+      // Check for heartbeat: has src + battery + rssi (node heartbeat)
+      if (msg.src != null && msg.battery !== undefined && msg.rssi !== undefined && !Array.isArray(msg.nodes)) {
+        type = 'heartbeat';
+        console.log('✅ Inferred type: heartbeat (src + battery + rssi)');
+      // Check for system_status: has nodes array OR has connected/battery/race_active fields without rssi
+      } else if (Array.isArray(msg.nodes) || (msg.connected !== undefined && msg.battery !== undefined)) {
         type = 'system_status';
-        console.log('✅ Inferred type: system_status (nodes detected)');
-      } else if (msg.status && msg.status.includes('Race')) {
+        console.log('✅ Inferred type: system_status (nodes or status fields detected)');
+      } else if (msg.status && typeof msg.status === 'string' && msg.status.includes('Race')) {
         type = 'race';
         console.log('✅ Inferred type: race (status message)');
       } else if (msg.payload === '101' || msg.payload === 'The Falcon Has Been Detected') {
@@ -69,7 +74,7 @@ export const BleProvider = ({ children }) => {
         type = 'detection';
         console.log('✅ Inferred type: detection (src + payload)');
       } else {
-        console.warn('⚠️ Could not infer message type');
+        console.warn('⚠️ Could not infer message type:', JSON.stringify(msg));
       }
     }
     
@@ -86,6 +91,7 @@ export const BleProvider = ({ children }) => {
     switch (type) {
       case 'system_status': {
         // Update global status
+        console.log('📡 Processing system_status:', { battery: msg.battery, race_active: msg.race_active, nodes: msg.nodes });
         try {
           raceContext.dispatch({
             type: 'SET_STATUS',
@@ -101,10 +107,12 @@ export const BleProvider = ({ children }) => {
         
         // Roster nodes - can be either array of numbers or objects
         if (Array.isArray(msg.nodes)) {
+          console.log('🟢 Updating node roster:', msg.nodes);
           msg.nodes.forEach(n => {
             // If n is a number, use it directly; if object, use n.id
             const nodeId = typeof n === 'object' ? n.id : n;
             const nodeIdStr = String(nodeId);
+            console.log('🟢 Dispatching UPDATE_NODE for:', nodeIdStr);
             try {
               raceContext.dispatch({
                 type: 'UPDATE_NODE',
@@ -120,6 +128,7 @@ export const BleProvider = ({ children }) => {
         break;
       }
       case 'race': {
+        // Handle race events - either status strings or event-based
         if (msg.event === 'started') {
           try {
             raceContext.dispatch({
@@ -130,19 +139,46 @@ export const BleProvider = ({ children }) => {
                 startTimeMs: msg.ts_iso ? Date.parse(msg.ts_iso) : Date.now(),
               }
             });
+            raceContext.dispatch({
+              type: 'SET_STATUS',
+              payload: { connected: true, race_active: true, ts_received: Date.now() },
+            });
           } catch {}
         } else if (msg.event === 'stopped') {
-          try { raceContext.dispatch({ type: 'STOP_RACE' }); } catch {}
+          try {
+            raceContext.dispatch({ type: 'STOP_RACE' });
+            raceContext.dispatch({
+              type: 'SET_STATUS',
+              payload: { connected: true, race_active: false, ts_received: Date.now() },
+            });
+          } catch {}
+        } else if (typeof msg.status === 'string') {
+          // Handle simple race status strings from master
+          const started = msg.status.toLowerCase().includes('started');
+          const stopped = msg.status.toLowerCase().includes('stopped');
+          try {
+            raceContext.dispatch({
+              type: 'SET_STATUS',
+              payload: {
+                connected: true,
+                race_active: started ? true : stopped ? false : undefined,
+                ts_received: Date.now(),
+              },
+            });
+          } catch {}
         }
         break;
       }
       case 'falcon': {
         try {
+          // Use utc or ts_iso field for timestamp (device sends 'utc')
+          const timestamp = msg.utc || msg.ts_iso || new Date().toISOString();
+          console.log('🦅 Adding falcon detection:', { nodeId: src, timestamp, payload: msg.payload });
           raceContext.dispatch({
             type: 'ADD_DETECTION',
             payload: {
               nodeId: src != null ? String(src) : 'master',
-              ts_iso: msg.ts_iso,
+              ts_iso: timestamp,
               type: 'falcon',
               payload: msg.payload,
             }
@@ -246,6 +282,48 @@ export const BleProvider = ({ children }) => {
               ts_iso: msg.ts_iso,
               type: 'camera',
               event: msg.event,
+            }
+          });
+        } catch {}
+        break;
+      }
+      case 'heartbeat': {
+        // Node heartbeat with battery, RSSI, GPS data
+        if (src != null) {
+          const nodeIdStr = String(src);
+          console.log('💓 Heartbeat from node:', nodeIdStr, { battery: msg.battery, rssi: msg.rssi });
+          try {
+            raceContext.dispatch({
+              type: 'UPDATE_NODE',
+              payload: {
+                id: nodeIdStr,
+                lastSeen: Date.now(),
+                battery: msg.battery,
+                rssi: msg.rssi,
+                lat: msg.lat,
+                lng: msg.lng,
+                cameraPresent: msg.camera_present,
+              }
+            });
+          } catch {}
+        }
+        break;
+      }
+      case 'status': {
+        // Master status update (also sent as type: 'status')
+        console.log('📡 Processing status:', { battery: msg.battery, race_active: msg.race_active, connected: msg.connected });
+        try {
+          raceContext.dispatch({
+            type: 'SET_STATUS',
+            payload: {
+              connected: msg.connected ?? true,
+              battery: msg.battery,
+              race_active: msg.race_active,
+              progress_percent: msg.progress_percent,
+              lat: msg.lat,
+              lng: msg.lng,
+              track_length_m: msg.track_length_m,
+              ts_received: Date.now(),
             }
           });
         } catch {}
@@ -369,26 +447,51 @@ export const BleProvider = ({ children }) => {
         monitorSubscriptionRef.current = null;
       }
 
-      // Wrap the notification handler with error boundaries
+      // Create a super safe notification handler that catches ALL errors
       const safeNotificationHandler = (error, characteristic) => {
+        // Silence expected disconnection errors
+        if (error?.message?.includes('BleDisconnectedException') || 
+            error?.message?.includes('Disconnected') ||
+            error?.message?.includes('Unsubscribed') ||
+            error?.message?.includes('NullPointerException')) {
+          console.log('📴 BLE disconnected (expected)');
+          return;
+        }
+        
         try {
           if (error) {
-            console.warn('⚠️ Notification subscription error (non-fatal):', error?.message || error);
-            // Don't crash on subscription errors, just log them
+            // Log the error but don't crash
+            console.warn('⚠️ Notification handler error:', error?.message || error);
             return;
           }
           handleNotification(error, characteristic);
         } catch (e) {
-          console.error('❌ Fatal error in notification handler:', e);
-          // Still try to keep going
+          console.error('❌ Error in handleNotification:', e?.message || e);
+          // Silently swallow to prevent unhandled rejection
         }
       };
 
-      const subscription = device.monitorCharacteristicForService(
-        BLE_CONFIG.SERVICE_UUID,
-        BLE_CONFIG.TX_CHAR_UUID,
-        safeNotificationHandler
-      );
+      // Wrap subscription setup to catch immediate errors
+      let subscription;
+      try {
+        subscription = device.monitorCharacteristicForService(
+          BLE_CONFIG.SERVICE_UUID,
+          BLE_CONFIG.TX_CHAR_UUID,
+          safeNotificationHandler
+        );
+      } catch (subscriptionError) {
+        console.warn('⚠️ Subscription setup failed:', subscriptionError?.message || subscriptionError);
+        throw subscriptionError;
+      }
+      
+      // If subscription is a promise, handle it safely
+      if (subscription && typeof subscription.then === 'function') {
+        subscription
+          .catch((err) => {
+            console.warn('⚠️ Subscription promise rejected:', err?.message || err);
+            // Don't rethrow - let monitoring fail gracefully
+          });
+      }
       
       monitorSubscriptionRef.current = subscription;
       console.log('✅ Monitoring subscription created');
@@ -595,34 +698,61 @@ export const BleProvider = ({ children }) => {
   // Write command to device
   const write = async (command, withoutResponse = false) => {
     try {
-      const device = connectedDeviceRef.current;
+      // Ensure ref stays in sync with state to avoid stale references across screens
+      let device = connectedDeviceRef.current || connectedDevice || null;
+      if (!device) {
+        // Attempt to recover a connected device from the BLE manager (service 1234)
+        try {
+          const candidates = await manager.current.connectedDevices([BLE_CONFIG.SERVICE_UUID]);
+          if (candidates && candidates.length > 0) {
+            device = candidates[0];
+            connectedDeviceRef.current = device;
+            setConnectedDevice(device);
+            console.log('🔄 Recovered connected device from manager');
+          }
+        } catch (recoverErr) {
+          console.warn('⚠️ Could not recover connected device:', recoverErr?.message || recoverErr);
+        }
+      }
+      if (!connectedDeviceRef.current && device) {
+        connectedDeviceRef.current = device;
+      }
       if (!device) {
         console.warn('Cannot write - device not connected');
         return false;
       }
 
-      // Check if device is still connected
-      const isConnected = await device.isConnected();
-      if (!isConnected) {
-        console.warn('Device disconnected');
-        connectedDeviceRef.current = null;
-        setConnectedDevice(null);
-        return false;
-      }
+      // Attempt write regardless of isConnected result (bridgeless can return stale state)
 
       const commandString = typeof command === 'string' ? command : JSON.stringify(command);
       const commandBase64 = Buffer.from(commandString, 'utf8').toString('base64');
 
-      await device.writeCharacteristicWithResponseForService(
-        BLE_CONFIG.SERVICE_UUID,
-        BLE_CONFIG.RX_CHAR_UUID,
-        commandBase64
-      ).catch((err) => {
-        console.error('❌ BLE writeCharacteristicWithResponseForService error:', err);
-        if (err && err.reason) console.error('❌ BLE error reason:', err.reason);
-        if (err && err.reason) alert('BLE Error: ' + err.reason);
-        throw err;
-      });
+      const performWrite = async () => {
+        try {
+          if (withoutResponse && device.writeCharacteristicWithoutResponseForService) {
+            await device.writeCharacteristicWithoutResponseForService(
+              BLE_CONFIG.SERVICE_UUID,
+              BLE_CONFIG.RX_CHAR_UUID,
+              commandBase64
+            );
+          } else {
+            await device.writeCharacteristicWithResponseForService(
+              BLE_CONFIG.SERVICE_UUID,
+              BLE_CONFIG.RX_CHAR_UUID,
+              commandBase64
+            );
+          }
+          return true;
+        } catch (err) {
+          console.error('❌ BLE write error:', err?.message || err);
+          if (err && err.reason) console.error('❌ BLE error reason:', err.reason);
+          return false;
+        }
+      };
+
+      let ok = await performWrite();
+      // Keep link recovery manual-only: do not auto-send get_status here
+      if (!ok) return false;
 
       console.log('📤 BLE TX:', commandString);
       console.log('✅ Command sent successfully');

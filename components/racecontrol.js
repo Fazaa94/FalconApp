@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -7,16 +8,84 @@ import {
   StatusBar,
   Alert,
   StyleSheet,
+  Modal,
+  Share,
+  Platform,
+  Animated,
 } from 'react-native';
+import LinearGradient from 'react-native-linear-gradient';
+import RNFS from 'react-native-fs';
+import RNShare from 'react-native-share';
 import { useBle } from '../src/ble/BleProvider';
 import { useRace } from '../src/context/RaceContext';
-import { COLORS } from './theme';
+import { COLORS, FONTS, SPACING, RADIUS } from './theme';
 import realm from '../db/database'; // Make sure this is your Realm import!
+
+// Format milliseconds to mm:ss.SS
+const formatRaceTime = (ms) => {
+  if (!ms || ms < 0) return '00:00.00';
+  const totalSeconds = ms / 1000;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, '0')}:${seconds.toFixed(2).padStart(5, '0')}`;
+};
 
 const FalconRaceControlScreen = () => {
   const raceCtx = useRace();
   const { write, connectedDevice, lastBleMessage } = useBle();
   const [falcons, setFalcons] = useState([]);
+  const [savedRaces, setSavedRaces] = useState([]);
+  const [selectedRaceDetails, setSelectedRaceDetails] = useState(null);
+  const [showRaceModal, setShowRaceModal] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  
+  // Animation values
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  
+  // Timer effect
+  useEffect(() => {
+    let interval = null;
+    const currentRace = raceCtx?.state?.currentRace;
+    
+    if (currentRace && currentRace.status !== 'stopped') {
+      interval = setInterval(() => {
+        setElapsedTime(Date.now() - currentRace.startTimeMs);
+      }, 50);
+      
+      // Start pulse animation
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.05,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 500,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+    } else {
+      setElapsedTime(0);
+      pulseAnim.setValue(1);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [raceCtx?.state?.currentRace, raceCtx?.state?.currentRace?.status]);
+  
+  // Fade in animation on mount
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+  }, []);
 
   // Load registered falcons from Realm DB
   useEffect(() => {
@@ -24,33 +93,418 @@ const FalconRaceControlScreen = () => {
     setFalcons(Array.from(falconsFromRealm));
   }, []);
 
+  // Load saved races from Realm
+  const loadSavedRaces = useCallback(() => {
+    try {
+      const racesFromRealm = realm.objects('RaceResults').sorted('raceDate', true);
+      setSavedRaces(Array.from(racesFromRealm).slice(0, 10)); // Last 10 races
+    } catch (e) {
+      console.warn('Could not load saved races:', e);
+    }
+  }, []);
+
+  // Load races on mount and when race stops
+  useEffect(() => {
+    loadSavedRaces();
+  }, [loadSavedRaces]);
+
+  // Reload races when a race is saved
+  useFocusEffect(
+    useCallback(() => {
+      loadSavedRaces();
+    }, [loadSavedRaces])
+  );
+
+  // === EXPORT FUNCTIONS ===
+  
+  // Generate text report for a single race
+  const generateRaceText = (race) => {
+    const checkpoints = race.checkpoints ? Array.from(race.checkpoints) : [];
+    let text = `🏆 FALCON RACE RESULTS
+`;
+    text += `${'='.repeat(30)}\n\n`;
+    text += `🦅 Falcon: ${race.falconName || 'Unknown'}\n`;
+    if (race.breed) text += `   Breed: ${race.breed}\n`;
+    if (race.weight) text += `   Weight: ${race.weight}\n`;
+    text += `\n📊 PERFORMANCE:\n`;
+    text += `   ⏱️ Time: ${race.completionTime?.toFixed(2) || '--'} seconds\n`;
+    text += `   🚀 Avg Speed: ${race.averageSpeed?.toFixed(1) || '--'} m/s\n`;
+    text += `   📍 Track: ${race.trackLength || 800}m\n`;
+    text += `\n📅 Date: ${race.raceDate ? new Date(race.raceDate).toLocaleString() : 'Unknown'}\n`;
+    if (race.weatherConditions) text += `☀️ Weather: ${race.weatherConditions}\n`;
+    
+    if (checkpoints.length > 0) {
+      text += `\n📍 CHECKPOINTS (${checkpoints.length}):\n`;
+      checkpoints.forEach((cp, i) => {
+        text += `   #${i + 1} ${cp.name}: ${cp.splitTime?.toFixed(1)}s`;
+        if (cp.speed) text += ` (${cp.speed.toFixed(1)} m/s)`;
+        text += `\n`;
+      });
+    }
+    
+    if (race.notes) text += `\n📝 Notes: ${race.notes}\n`;
+    text += `\n${'='.repeat(30)}\n`;
+    text += `Generated by FalconRace App\n`;
+    
+    return text;
+  };
+
+  // Generate CSV for single or multiple races
+  const generateRaceCSV = (races) => {
+    const raceArray = Array.isArray(races) ? races : [races];
+    let csv = 'Falcon Race Results Export\n';
+    csv += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    // Summary header
+    csv += 'RACE SUMMARY\n';
+    csv += 'Falcon Name,Breed,Weight,Time (s),Avg Speed (m/s),Track (m),Date,Weather,Checkpoints\n';
+    
+    raceArray.forEach(race => {
+      const checkpointCount = race.checkpoints?.length || 0;
+      csv += `"${race.falconName || 'Unknown'}",`;
+      csv += `"${race.breed || ''}",`;
+      csv += `"${race.weight || ''}",`;
+      csv += `${race.completionTime?.toFixed(2) || ''},`;
+      csv += `${race.averageSpeed?.toFixed(1) || ''},`;
+      csv += `${race.trackLength || 800},`;
+      csv += `"${race.raceDate ? new Date(race.raceDate).toLocaleString() : ''}",`;
+      csv += `"${race.weatherConditions || ''}",`;
+      csv += `${checkpointCount}\n`;
+    });
+    
+    // Checkpoint details
+    csv += '\nCHECKPOINT DETAILS\n';
+    csv += 'Falcon Name,Checkpoint,Distance (m),Split Time (s),Speed (m/s)\n';
+    
+    raceArray.forEach(race => {
+      const checkpoints = race.checkpoints ? Array.from(race.checkpoints) : [];
+      checkpoints.forEach((cp, i) => {
+        csv += `"${race.falconName || 'Unknown'}",`;
+        csv += `"${cp.name || 'Checkpoint ' + (i + 1)}",`;
+        csv += `${cp.distance || (i + 1) * 100},`;
+        csv += `${cp.splitTime?.toFixed(2) || ''},`;
+        csv += `${cp.speed?.toFixed(2) || ''}\n`;
+      });
+    });
+    
+    return csv;
+  };
+
+  // Share race as text message
+  const shareRaceAsText = async (race) => {
+    try {
+      const text = generateRaceText(race);
+      await Share.share({
+        message: text,
+        title: `Race Results - ${race.falconName}`,
+      });
+    } catch (error) {
+      if (error.message !== 'User did not share') {
+        Alert.alert('Share Failed', error.message);
+      }
+    }
+  };
+
+  // Export race to CSV file and share
+  const exportRaceToCSV = async (race) => {
+    try {
+      const csv = generateRaceCSV(race);
+      const fileName = `falcon_race_${race.falconName?.replace(/\s+/g, '_') || 'export'}_${Date.now()}.csv`;
+      
+      // Use CachesDirectoryPath for sharing on Android (more reliable)
+      const filePath = `${RNFS.CachesDirectoryPath}/${fileName}`;
+      
+      await RNFS.writeFile(filePath, csv, 'utf8');
+      
+      // Verify file exists
+      const exists = await RNFS.exists(filePath);
+      if (!exists) {
+        throw new Error('Failed to create export file');
+      }
+      
+      console.log('📄 CSV file created at:', filePath);
+      
+      // Use react-native-share for proper file sharing
+      await RNShare.open({
+        url: 'file://' + filePath,
+        type: 'text/csv',
+        filename: fileName,
+        title: `Race Results - ${race.falconName}`,
+        subject: `Falcon Race Results - ${race.falconName}`,
+        failOnCancel: false,
+      });
+      
+    } catch (error) {
+      // User cancelled share - not an error
+      if (error.message?.includes('User did not share') || 
+          error.message?.includes('cancelled') ||
+          error.message?.includes('CANCELED')) {
+        console.log('Share cancelled by user');
+        return;
+      }
+      console.error('Export error:', error);
+      Alert.alert('Export Failed', error.message || 'Unknown error occurred');
+    }
+  };
+
+  // Export all saved races to CSV
+  const exportAllRacesToCSV = async () => {
+    if (savedRaces.length === 0) {
+      Alert.alert('No Races', 'There are no saved races to export.');
+      return;
+    }
+    
+    try {
+      const csv = generateRaceCSV(savedRaces);
+      const fileName = `falcon_races_all_${Date.now()}.csv`;
+      
+      // Use CachesDirectoryPath for sharing on Android (more reliable)
+      const filePath = `${RNFS.CachesDirectoryPath}/${fileName}`;
+      
+      await RNFS.writeFile(filePath, csv, 'utf8');
+      
+      // Verify file exists
+      const exists = await RNFS.exists(filePath);
+      if (!exists) {
+        throw new Error('Failed to create export file');
+      }
+      
+      console.log('📄 CSV file created at:', filePath);
+      
+      // Use react-native-share for proper file sharing
+      await RNShare.open({
+        url: 'file://' + filePath,
+        type: 'text/csv',
+        filename: fileName,
+        title: `All Race Results (${savedRaces.length} races)`,
+        subject: `Falcon Race Results - ${savedRaces.length} races`,
+        failOnCancel: false,
+      });
+      
+    } catch (error) {
+      // User cancelled share - not an error
+      if (error.message?.includes('User did not share') || 
+          error.message?.includes('cancelled') ||
+          error.message?.includes('CANCELED')) {
+        console.log('Share cancelled by user');
+        return;
+      }
+      console.error('Export error:', error);
+      Alert.alert('Export Failed', error.message || 'Unknown error occurred');
+    }
+  };
+
+  // Optional: one-time status request when device connects
+  useEffect(() => {
+    if (connectedDevice) {
+      (async () => { try { await write('get_status'); } catch {} })();
+    }
+  }, [connectedDevice]);
+
   const selectedFalcon = raceCtx?.state?.selectedFalcon;
   const status = raceCtx?.state?.status ?? {};
 
   const startRace = async () => {
-    if (!connectedDevice || !selectedFalcon) {
-      Alert.alert("Please select a Falcon and connect to device!");
+    if (!selectedFalcon) {
+      Alert.alert('Please select a Falcon!');
       return;
     }
     try {
-      await write("start_race");
-      raceCtx.dispatch({ type: "START_RACE" });
-      Alert.alert("Race Started");
+      console.log('🚀 Attempting to start race...');
+
+      // Attempt start regardless of local connectedDevice state; rely on write() as source of truth
+
+      // Soft check: status.connected may be false until get_status is requested.
+      if (!status?.connected) {
+        console.warn('⚠️ Master status not yet connected; proceeding based on BLE link.');
+      }
+
+      let writeResult = await write('start_race');
+      console.log('📡 Write result:', writeResult);
+      if (!writeResult) {
+        // One-time retry: request status then retry start
+        // Removed automatic get_status to keep BLE manual-only
+        await new Promise(r => setTimeout(r, 600));
+        writeResult = await write('start_race');
+        console.log('📡 Retry write result:', writeResult);
+        if (!writeResult) {
+          Alert.alert(
+            'Start Command Failed',
+            'Could not send start_race over BLE. Please reconnect and try again.',
+            [{ text: 'OK' }],
+          );
+          return;
+        }
+      }
+
+      if (raceCtx && raceCtx.dispatch) {
+        // Reset any lingering race state from previous race
+        if (raceCtx.state?.currentRace || raceCtx.state?.status?.race_active) {
+          console.log('🔄 Resetting previous race state before starting new race');
+          raceCtx.dispatch({ type: 'RESET_RACE' });
+        }
+        raceCtx.dispatch({ type: 'CLEAR_DETECTIONS' });
+        raceCtx.dispatch({
+          type: 'START_RACE',
+          payload: {
+            id: `race_${Date.now()}`,
+            falcon: selectedFalcon,
+            startTimeMs: Date.now(),
+          },
+        });
+        console.log('✅ START_RACE dispatched to context');
+      } else {
+        console.warn('⚠️ Race context not available');
+      }
+
+      // Keep status requests manual only (no post-start sync)
+      Alert.alert('Race Started', 'Command sent to device');
     } catch (e) {
-      Alert.alert("Error", "Failed to send start_race command.");
+      console.error('❌ Error in startRace:', e);
+      console.error('Stack:', e.stack);
+      Alert.alert('Error', 'Failed to start race: ' + (e.message || String(e)));
     }
   };
 
-  const stopRace = async () => {
-    if (!connectedDevice) return;
-    try {
-      await write("stop_race");
-      raceCtx.dispatch({ type: "STOP_RACE" });
-      Alert.alert("Race Stopped");
-    } catch (e) {
-      Alert.alert("Error", "Failed to send stop_race command.");
-    }
-  };
+    const stopRace = async () => {
+      try {
+        console.log('🏁 Attempting to stop race...');
+        if (!connectedDevice) {
+          Alert.alert('Device Not Connected', 'Connect to the ESP32 master in Dashboard before stopping a race.');
+          return;
+        }
+
+        const ok = await write('stop_race');
+        if (!ok) {
+          Alert.alert('Stop Command Failed', 'Could not send stop_race over BLE. Please reconnect and try again.');
+          return;
+        }
+
+        const currentRace = raceCtx?.state?.currentRace || { id: `race_${Date.now()}`, startTimeMs: Date.now() };
+        const raceEndTime = Date.now();
+
+        const durationMs = raceEndTime - currentRace.startTimeMs;
+        const durationSecs = durationMs / 1000;
+
+        // Filter detections - capture both camera detections (payload '101') and falcon type detections
+        console.log('🔍 All detections in state:', raceCtx.state.detections);
+        const raceDetections = (raceCtx.state.detections || []).filter(d => {
+          // Must have timestamp - check both ts_iso and utc fields
+          const timestamp = d.ts_iso || d.utc;
+          if (!timestamp) {
+            console.log('⚠️ Detection missing timestamp:', d);
+            return false;
+          }
+          const detTime = new Date(timestamp).getTime();
+          if (detTime < currentRace.startTimeMs || detTime > raceEndTime) {
+            console.log('⚠️ Detection outside race window:', { detTime, startTime: currentRace.startTimeMs, endTime: raceEndTime });
+            return false;
+          }
+          
+          // Accept camera detections with '101' payload OR falcon type detections
+          const isCameraDetection = d.payload === '101' || d.type === 'camera';
+          const isFalconDetection = d.type === 'falcon' || d.payload === 'The Falcon Has Been Detected';
+          
+          console.log('✅ Detection check:', { nodeId: d.nodeId, payload: d.payload, type: d.type, isCameraDetection, isFalconDetection });
+          return isCameraDetection || isFalconDetection;
+        });
+        
+        console.log('🏁 Race detections found:', raceDetections.length, raceDetections);
+
+        const detectionTimes = raceDetections.map((d, idx) => {
+          const timestamp = d.ts_iso || d.utc;
+          const detTime = new Date(timestamp).getTime();
+          const relativeTime = (detTime - currentRace.startTimeMs) / 1000;
+          return {
+            time: relativeTime,
+            nodeId: d.nodeId || 'master',
+            timestamp: timestamp,
+          };
+        });
+
+        // Create proper Checkpoint objects for Realm
+        const checkpointObjects = detectionTimes.map((d, idx) => ({
+          id: `${currentRace.id}_cp_${idx}`,
+          name: `Node ${d.nodeId}`,
+          distance: (idx + 1) * 100, // Assume 100m between nodes
+          splitTime: d.time,
+          speed: idx > 0 && d.time > detectionTimes[idx - 1].time 
+            ? 100 / (d.time - detectionTimes[idx - 1].time) 
+            : null,
+          timestamp: new Date(d.timestamp),
+        }));
+
+        const raceResult = {
+          id: currentRace.id,
+          animalId: selectedFalcon?.animalId || '',
+          falconName: selectedFalcon?.falconName || 'Unknown',
+          breed: selectedFalcon?.breed || '',
+          weight: selectedFalcon?.weight || '',
+          raceDistance: String(raceDetections.length * 100) || '0',
+          trackLength: 800,
+          completionTime: durationSecs,
+          averageSpeed: durationSecs > 0 ? 800 / durationSecs : 0,
+          maxSpeed: null,
+          raceDate: new Date(),
+          checkpoints: checkpointObjects,
+          weatherConditions: 'Clear',
+          trackConditions: 'Good',
+          notes: `Detected at ${raceDetections.length} checkpoints. Times: ${detectionTimes.map(d => `${d.time.toFixed(1)}s@node${d.nodeId}`).join(', ')}`,
+          synced: false,
+          createdAt: new Date(),
+        };
+
+        try {
+          realm.write(() => {
+            realm.create('RaceResults', raceResult, 'modified');
+          });
+          console.log('✅ Race results saved to database');
+        } catch (dbErr) {
+          console.warn('⚠️ Could not save race to database:', dbErr.message);
+        }
+
+        // First dispatch STOP_RACE to set race_active=false
+        raceCtx.dispatch({ type: 'STOP_RACE' });
+        console.log('✅ STOP_RACE dispatched - race_active set to false');
+
+        // Then save race to history and clear currentRace
+        raceCtx.dispatch({
+          type: 'SAVE_RACE',
+          payload: {
+            ...raceResult,
+            detectionTimes,
+          },
+        });
+
+        // Clear detections for next race
+        raceCtx.dispatch({ type: 'CLEAR_DETECTIONS' });
+        console.log('✅ Detections cleared, ready for next race');
+
+        // Reload saved races list
+        loadSavedRaces();
+
+        console.log('✅ Race saved successfully');
+        
+        // Show option to view race details
+        Alert.alert(
+          'Race Completed! 🏁',
+          `Duration: ${durationSecs.toFixed(1)}s\nCheckpoints: ${raceDetections.length}`,
+          [
+            { text: 'OK', style: 'cancel' },
+            { 
+              text: 'View Details', 
+              onPress: () => {
+                setSelectedRaceDetails({ ...raceResult, detectionTimes });
+                setShowRaceModal(true);
+              }
+            },
+          ]
+        );
+      } catch (e) {
+        console.error('❌ Error sending stop_race:', e);
+        Alert.alert('Error', 'Failed to send stop_race command: ' + e.message);
+      }
+    };
 
   const getStatus = async () => {
     if (!connectedDevice) return;
@@ -86,81 +540,177 @@ const FalconRaceControlScreen = () => {
     );
   }
 
+  // Derive connection status: BLE link is the source of truth
+  const isConnected = !!connectedDevice;
+  const isRaceActive = raceCtx?.state?.currentRace && raceCtx?.state?.currentRace?.status !== 'stopped';
+  const battery = raceCtx?.state?.status?.battery;
+  const batteryPercent = battery ? Math.min(100, Math.max(0, ((battery - 3.0) / 1.2) * 100)) : null;
+
   return (
-    <View style={styles.screen}>
-      <StatusBar backgroundColor={COLORS.desertSand} />
-      {/* System Status Card */}
-      <View style={styles.cardHeader}>
-        <Text style={styles.headerTitle}>
-          {status?.connected
-            ? "🟢 Connected"
-            : "🔴 Disconnected"}
+    <Animated.View style={[styles.screen, { opacity: fadeAnim }]}>
+      <StatusBar backgroundColor={COLORS.cobaltBlue} barStyle="light-content" />
+      
+      {/* Premium Header */}
+      <LinearGradient
+        colors={[COLORS.cobaltBlue, '#0D47A1']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.premiumHeader}
+      >
+        <View style={styles.headerContent}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerTitle}>🦅 Race Control</Text>
+            <Text style={styles.headerSubtitle}>
+              {selectedFalcon ? `Flying: ${selectedFalcon.falconName}` : 'Select a falcon to begin'}
+            </Text>
+          </View>
+          <View style={styles.headerRight}>
+            {/* Connection Status */}
+            <View style={[
+              styles.connectionBadge,
+              { backgroundColor: isConnected ? 'rgba(76,175,80,0.3)' : 'rgba(244,67,54,0.3)' }
+            ]}>
+              <View style={[
+                styles.connectionDot,
+                { backgroundColor: isConnected ? '#4CAF50' : '#F44336' }
+              ]} />
+              <Text style={styles.connectionText}>
+                {isConnected ? 'LIVE' : 'OFFLINE'}
+              </Text>
+            </View>
+            {/* Battery */}
+            {battery != null && typeof battery === 'number' && (
+              <View style={styles.batteryBadge}>
+                <Text style={styles.batteryEmoji}>🔋</Text>
+                <Text style={styles.batteryText}>{String(battery.toFixed(1))}V</Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </LinearGradient>
+      
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      
+      {/* Big Timer Display */}
+      <View style={styles.timerCard}>
+        <Animated.View style={{ transform: [{ scale: isRaceActive ? pulseAnim : 1 }] }}>
+          <Text style={[
+            styles.timerDisplay,
+            isRaceActive && styles.timerRunning
+          ]}>
+            {formatRaceTime(elapsedTime)}
+          </Text>
+        </Animated.View>
+        <Text style={styles.timerLabel}>
+          {isRaceActive ? '🦅 RACE IN PROGRESS' : '⏱️ READY TO START'}
         </Text>
-        <Text style={styles.headerInfo}>
-          Master Battery: {status?.battery ?? "--"}%
-        </Text>
+        {isRaceActive && (
+          <View style={styles.splitTimeContainer}>
+            <Text style={styles.splitTimeLabel}>Checkpoints: </Text>
+            <Text style={styles.splitTimeValue}>
+              {((raceCtx.state.detections || []).filter(d => 
+                d.payload === '101' || d.type === 'falcon' || d.type === 'camera' || d.payload === 'The Falcon Has Been Detected'
+              ).length)}
+            </Text>
+          </View>
+        )}
       </View>
-      {/* Falcon Selector */}
-      <View style={styles.selectorContainer}>
-        <Text style={styles.sectionTitle}>Select Falcon</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.falconsRow}>
+      
+      {/* Connection Notice - only show when BLE is actually disconnected */}
+      {!isConnected && (
+        <View style={styles.bannerWarning}>
+          <Text style={styles.bannerTitle}>⚠️ Not Connected</Text>
+          <Text style={styles.bannerText}>
+            Open Dashboard to connect to device
+          </Text>
+        </View>
+      )}
+      
+      {/* Premium Falcon Selector */}
+      <View style={styles.premiumCard}>
+        <View style={styles.premiumCardHeader}>
+          <View style={[styles.premiumCardIcon, { backgroundColor: COLORS.cobaltBlue + '15' }]}>
+            <Text style={{ fontSize: 20 }}>🦅</Text>
+          </View>
+          <Text style={styles.premiumCardTitle}>Select Falcon</Text>
+        </View>
+        
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.falconScrollContent}
+        >
           {falcons.length === 0 ? (
-            <Text style={styles.noFalcons}>No falcons registered</Text>
+            <View style={styles.emptyFalconCard}>
+              <Text style={styles.emptyFalconIcon}>🦅</Text>
+              <Text style={styles.emptyFalconText}>No falcons registered</Text>
+            </View>
           ) : (
-            falcons.map(falcon => (
+            falcons.map((falcon) => (
               <TouchableOpacity
                 key={falcon.id}
                 style={[
-                  styles.falconCard,
-                  selectedFalcon?.id === falcon.id && styles.falconCardSelected,
-                  !status.connected && styles.itemDisabled,
+                  styles.falconCardPremium,
+                  selectedFalcon?.id === falcon.id && styles.falconCardPremiumSelected,
                 ]}
-                disabled={!status.connected}
-                activeOpacity={0.8}
+                activeOpacity={0.7}
                 onPress={() => raceCtx.dispatch({ type: "SELECT_FALCON", payload: falcon })}
               >
-                <Text style={selectedFalcon?.id === falcon.id ? styles.falconNameSelected : styles.falconName}>
-                  {falcon.falconName}
+                {selectedFalcon?.id === falcon.id && (
+                  <View style={styles.falconCheckmark}>
+                    <Text style={{ color: '#fff', fontSize: 10 }}>✓</Text>
+                  </View>
+                )}
+                <Text style={styles.falconAvatarEmoji}>🦅</Text>
+                <Text style={[
+                  styles.falconNamePremium,
+                  selectedFalcon?.id === falcon.id && { color: COLORS.oasisGreen }
+                ]} numberOfLines={1}>
+                  {falcon.falconName?.substring(0, 8) || 'Falcon'}
                 </Text>
               </TouchableOpacity>
             ))
           )}
         </ScrollView>
       </View>
-      {/* Controls */}
-      <View style={styles.controlBar}>
+      
+      {/* Premium Action Buttons */}
+      <View style={styles.actionButtonsRow}>
         <TouchableOpacity
           style={[
-            styles.controlButton,
-            styles.startButton,
-            (!status.connected || !selectedFalcon || status.race_active) && styles.btnDisabled,
+            styles.actionButton,
+            styles.actionButtonStart,
+            (!selectedFalcon || status.race_active) && styles.btnDisabled,
           ]}
-          disabled={!status.connected || !selectedFalcon || status.race_active}
+          disabled={!selectedFalcon || status.race_active}
           onPress={startRace}
+          activeOpacity={0.8}
         >
-          <Text style={styles.controlButtonLabel}>START RACE</Text>
+          <Text style={styles.actionButtonIcon}>▶️</Text>
+          <Text style={styles.actionButtonText}>START</Text>
         </TouchableOpacity>
+        
         <TouchableOpacity
           style={[
-            styles.controlButton,
-            styles.stopButton,
-            (!status.connected || !status.race_active) && styles.btnDisabled,
+            styles.actionButton,
+            styles.actionButtonStop,
+            (!status.race_active) && styles.btnDisabled,
           ]}
-          disabled={!status.connected || !status.race_active}
+          disabled={!status.race_active}
           onPress={stopRace}
+          activeOpacity={0.8}
         >
-          <Text style={styles.controlButtonLabel}>STOP RACE</Text>
+          <Text style={styles.actionButtonIcon}>⏹️</Text>
+          <Text style={styles.actionButtonText}>STOP</Text>
         </TouchableOpacity>
+        
         <TouchableOpacity
-          style={[
-            styles.controlButton,
-            styles.statusButton,
-            !status.connected && styles.btnDisabled,
-          ]}
-          disabled={!status.connected}
+          style={[styles.actionButton, styles.actionButtonStatus]}
           onPress={getStatus}
+          activeOpacity={0.8}
         >
-          <Text style={styles.controlButtonLabel}>GET STATUS</Text>
+          <Text style={styles.actionButtonIcon}>📡</Text>
+          <Text style={styles.actionButtonText}>STATUS</Text>
         </TouchableOpacity>
       </View>
       {/* Detection Events */}
@@ -168,139 +718,912 @@ const FalconRaceControlScreen = () => {
         <Text style={styles.sectionTitle}>Detection Events</Text>
         <Text style={styles.detectMsg}>{detectionMsg}</Text>
       </View>
-    </View>
+      
+      {/* Race Statistics */}
+      {raceCtx.state.currentRace && (
+        <View style={styles.statsCard}>
+          <Text style={styles.sectionTitle}>📊 Race Statistics</Text>
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Status</Text>
+              <Text style={styles.statValue}>{raceCtx.state.currentRace.status === 'stopped' ? '🏁 Stopped' : '🛩️ Flying'}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Detections</Text>
+              <Text style={styles.statValue}>
+                {((raceCtx.state.detections || []).filter(d => 
+                  d.payload === '101' || d.type === 'falcon' || d.type === 'camera' || d.payload === 'The Falcon Has Been Detected'
+                ).length)}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Duration</Text>
+              <Text style={styles.statValue}>
+                {raceCtx.state.currentRace.endTime 
+                  ? `${Math.round((raceCtx.state.currentRace.endTime - raceCtx.state.currentRace.startTimeMs) / 1000)}s`
+                  : '--'
+                }
+              </Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Avg Speed</Text>
+              <Text style={styles.statValue}>
+                {raceCtx.state.currentRace.endTime
+                  ? `${(800 / ((raceCtx.state.currentRace.endTime - raceCtx.state.currentRace.startTimeMs) / 1000)).toFixed(1)} m/s`
+                  : '--'
+                }
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+      
+      {/* Saved Race Results from Database */}
+      {savedRaces.length > 0 && (
+        <View style={styles.historyCard}>
+          <View style={styles.historyHeader}>
+            <Text style={styles.sectionTitle}>📜 Saved Races ({savedRaces.length})</Text>
+            <TouchableOpacity 
+              style={styles.exportAllButton}
+              onPress={exportAllRacesToCSV}
+            >
+              <Text style={styles.exportAllButtonText}>📤 Export All</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.racesList} nestedScrollEnabled>
+            {savedRaces.slice(0, 5).map((race, idx) => (
+              <TouchableOpacity 
+                key={race.id || idx} 
+                style={styles.raceHistoryItem}
+                onPress={() => {
+                  setSelectedRaceDetails(race);
+                  setShowRaceModal(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <View style={styles.raceHistoryHeader}>
+                  <Text style={styles.raceHistoryTitle}>🦅 {race.falconName || 'Unknown'}</Text>
+                  <Text style={styles.raceHistoryDate}>
+                    {race.raceDate ? new Date(race.raceDate).toLocaleDateString() : ''}
+                  </Text>
+                </View>
+                <View style={styles.raceHistoryStats}>
+                  <Text style={styles.raceHistoryStat}>⏱️ {race.completionTime?.toFixed(1) || '--'}s</Text>
+                  <Text style={styles.raceHistoryStat}>🚀 {race.averageSpeed?.toFixed(1) || '--'} m/s</Text>
+                  <Text style={styles.raceHistoryStat}>📍 {race.checkpoints?.length || 0} nodes</Text>
+                </View>
+                <Text style={styles.viewDetailsHint}>Tap to view details →</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Empty State for No Races */}
+      {savedRaces.length === 0 && !raceCtx.state.currentRace && (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyIcon}>🏁</Text>
+          <Text style={styles.emptyText}>No races yet</Text>
+          <Text style={styles.emptySubtext}>Complete a race to see results here</Text>
+        </View>
+      )}
+      </ScrollView>
+
+      {/* Race Details Modal */}
+      <Modal
+        visible={showRaceModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowRaceModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Modal Header */}
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>🏆 Race Results</Text>
+                <TouchableOpacity 
+                  style={styles.closeButton}
+                  onPress={() => setShowRaceModal(false)}
+                >
+                  <Text style={styles.closeButtonText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              {selectedRaceDetails && (
+                <>
+                  {/* Falcon Info */}
+                  <View style={styles.modalSection}>
+                    <Text style={styles.modalSectionTitle}>🦅 Falcon</Text>
+                    <Text style={styles.modalFalconName}>{selectedRaceDetails.falconName || 'Unknown'}</Text>
+                    {selectedRaceDetails.breed && (
+                      <Text style={styles.modalDetail}>Breed: {selectedRaceDetails.breed}</Text>
+                    )}
+                    {selectedRaceDetails.weight && (
+                      <Text style={styles.modalDetail}>Weight: {selectedRaceDetails.weight}</Text>
+                    )}
+                  </View>
+
+                  {/* Performance Stats */}
+                  <View style={styles.modalSection}>
+                    <Text style={styles.modalSectionTitle}>📊 Performance</Text>
+                    <View style={styles.modalStatsGrid}>
+                      <View style={styles.modalStatBox}>
+                        <Text style={styles.modalStatValue}>
+                          {selectedRaceDetails.completionTime?.toFixed(2) || '--'}
+                        </Text>
+                        <Text style={styles.modalStatLabel}>Time (s)</Text>
+                      </View>
+                      <View style={styles.modalStatBox}>
+                        <Text style={styles.modalStatValue}>
+                          {selectedRaceDetails.averageSpeed?.toFixed(1) || '--'}
+                        </Text>
+                        <Text style={styles.modalStatLabel}>Avg Speed (m/s)</Text>
+                      </View>
+                      <View style={styles.modalStatBox}>
+                        <Text style={styles.modalStatValue}>
+                          {selectedRaceDetails.trackLength || 800}
+                        </Text>
+                        <Text style={styles.modalStatLabel}>Track (m)</Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Checkpoints */}
+                  {((selectedRaceDetails.checkpoints && selectedRaceDetails.checkpoints.length > 0) || 
+                    (selectedRaceDetails.detectionTimes && selectedRaceDetails.detectionTimes.length > 0)) && (
+                    <View style={styles.modalSection}>
+                      <Text style={styles.modalSectionTitle}>📍 Checkpoints ({selectedRaceDetails.checkpoints?.length || selectedRaceDetails.detectionTimes?.length || 0})</Text>
+                      {(selectedRaceDetails.checkpoints?.length > 0 
+                        ? Array.from(selectedRaceDetails.checkpoints).map((cp, i) => (
+                            <View key={cp.id || i} style={styles.checkpointItem}>
+                              <Text style={styles.checkpointNumber}>#{i + 1}</Text>
+                              <Text style={styles.checkpointNode}>{cp.name}</Text>
+                              <Text style={styles.checkpointTime}>{cp.splitTime?.toFixed(1)}s</Text>
+                              {cp.speed && <Text style={styles.checkpointSpeed}>{cp.speed.toFixed(1)} m/s</Text>}
+                            </View>
+                          ))
+                        : selectedRaceDetails.detectionTimes?.map((det, i) => (
+                            <View key={i} style={styles.checkpointItem}>
+                              <Text style={styles.checkpointNumber}>#{i + 1}</Text>
+                              <Text style={styles.checkpointNode}>Node {det.nodeId}</Text>
+                              <Text style={styles.checkpointTime}>{det.time}s</Text>
+                            </View>
+                          ))
+                      )}
+                    </View>
+                  )}
+
+                  {/* Race Info */}
+                  <View style={styles.modalSection}>
+                    <Text style={styles.modalSectionTitle}>ℹ️ Race Info</Text>
+                    <Text style={styles.modalDetail}>
+                      Date: {selectedRaceDetails.raceDate 
+                        ? new Date(selectedRaceDetails.raceDate).toLocaleString() 
+                        : 'Unknown'}
+                    </Text>
+                    {selectedRaceDetails.weatherConditions && (
+                      <Text style={styles.modalDetail}>Weather: {selectedRaceDetails.weatherConditions}</Text>
+                    )}
+                    {selectedRaceDetails.notes && (
+                      <Text style={styles.modalDetail}>Notes: {selectedRaceDetails.notes}</Text>
+                    )}
+                  </View>
+
+                  {/* Export Buttons */}
+                  <View style={styles.modalSection}>
+                    <Text style={styles.modalSectionTitle}>📤 Share Results</Text>
+                    <View style={styles.exportButtonsRow}>
+                      <TouchableOpacity 
+                        style={styles.exportButton}
+                        onPress={() => shareRaceAsText(selectedRaceDetails)}
+                      >
+                        <Text style={styles.exportButtonIcon}>💬</Text>
+                        <Text style={styles.exportButtonText}>Share Text</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity 
+                        style={[styles.exportButton, styles.exportButtonCSV]}
+                        onPress={() => exportRaceToCSV(selectedRaceDetails)}
+                      >
+                        <Text style={styles.exportButtonIcon}>📄</Text>
+                        <Text style={styles.exportButtonText}>Export CSV</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </>
+              )}
+            </ScrollView>
+
+            {/* Close Button */}
+            <TouchableOpacity 
+              style={styles.modalCloseBtn}
+              onPress={() => setShowRaceModal(false)}
+            >
+              <Text style={styles.modalCloseBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </Animated.View>
   );
 };
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: COLORS.desertSand },
-  cardHeader: {
-    backgroundColor: COLORS.cobaltBlue,
-    borderRadius: 16,
-    padding: 16,
-    margin: 16,
-    marginBottom: 8,
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 7,
-    elevation: 3,
+  scrollContent: { paddingBottom: 24, paddingTop: 16 },
+  
+  // Premium Header
+  premiumHeader: {
+    paddingTop: 16,
+    paddingBottom: 20,
+    paddingHorizontal: SPACING.lg,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  headerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerLeft: {
+    flex: 1,
   },
   headerTitle: {
-    color: "#fff", fontWeight: "bold", fontSize: 19,
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 20,
+    color: '#FFFFFF',
+    letterSpacing: 1,
   },
-  headerInfo: {
-    color: "#fff", fontSize: 14, marginTop: 6, fontStyle: 'italic', opacity: 0.85,
-  },
-  selectorContainer: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 18,
-    marginHorizontal: 16,
-    marginVertical: 4,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 2,
-  },
-  sectionTitle: {
-    fontWeight: 'bold',
-    fontSize: 16,
-    marginBottom: 14,
-    color: COLORS.cobaltBlue,
-    marginLeft: 6,
-  },
-  falconsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+  headerSubtitle: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.8)',
     marginTop: 4,
-    marginLeft: 2,
   },
-  falconCard: {
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: 22,
-    backgroundColor: COLORS.cobaltBlue + "15",
-    elevation: 3,
-    marginHorizontal: 6,
-    minWidth: 70,
+  headerRight: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.cobaltBlue + "30",
   },
-  falconCardSelected: {
-    backgroundColor: COLORS.oasisGreen + "99",
-    borderColor: COLORS.oasisGreen,
-    borderWidth: 3,
-    shadowColor: COLORS.oasisGreen,
+  connectionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  connectionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 5,
+  },
+  connectionText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  batteryBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  batteryEmoji: {
+    fontSize: 12,
+    marginRight: 4,
+  },
+  batteryText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 10,
+    color: '#FFFFFF',
+  },
+  
+  // Timer Card
+  timerCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+    paddingVertical: 32,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
     elevation: 6,
   },
-  falconName: {
-    color: COLORS.cobaltBlue,
-    fontWeight: "bold",
-    fontSize: 15,
+  timerDisplay: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 52,
+    color: COLORS.charcoal,
+    letterSpacing: 3,
   },
-  falconNameSelected: {
+  timerRunning: {
     color: COLORS.oasisGreen,
-    fontWeight: "bold",
-    fontSize: 16,
   },
-  noFalcons: {
-    color: COLORS.terracotta,
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginRight: 16,
+  timerLabel: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 8,
+    letterSpacing: 2,
   },
-  itemDisabled: {
+  splitTimeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    backgroundColor: COLORS.oasisGreen + '15',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  splitTimeLabel: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 12,
+    color: COLORS.oasisGreen,
+  },
+  splitTimeValue: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 16,
+    color: COLORS.oasisGreen,
+  },
+  
+  // Premium Card
+  premiumCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  premiumCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  premiumCardIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  premiumCardTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.charcoal,
+    letterSpacing: 0.3,
+  },
+  
+  // Falcon Cards
+  falconScrollContent: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  falconCardPremium: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: COLORS.desertSand + '80',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+    marginRight: 10,
+  },
+  falconCardPremiumSelected: {
+    borderColor: COLORS.oasisGreen,
+    backgroundColor: COLORS.oasisGreen + '15',
+  },
+  falconAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.cobaltBlue + '15',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  falconAvatarSelected: {
+    backgroundColor: COLORS.oasisGreen + '20',
+  },
+  falconAvatarEmoji: {
+    fontSize: 20,
+  },
+  falconNamePremium: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 8,
+    color: COLORS.charcoal,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  falconBreedPremium: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 0,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    display: 'none',
+  },
+  falconCheckmark: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: COLORS.oasisGreen,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: COLORS.oasisGreen,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  emptyFalconCard: {
+    width: 160,
+    padding: 24,
+    borderRadius: 16,
+    backgroundColor: COLORS.desertSand,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.warmStone,
+    borderStyle: 'dashed',
+  },
+  emptyFalconIcon: {
+    fontSize: 32,
+    opacity: 0.5,
+    marginBottom: 8,
+  },
+  emptyFalconText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+  },
+  
+  // Action Buttons
+  actionButtonsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+  },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    gap: 6,
+  },
+  actionButtonStart: {
+    backgroundColor: COLORS.oasisGreen,
+    shadowColor: COLORS.oasisGreen,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  actionButtonStop: {
+    backgroundColor: COLORS.terracotta,
+    shadowColor: COLORS.terracotta,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  actionButtonStatus: {
+    backgroundColor: COLORS.cobaltBlue,
+    shadowColor: COLORS.cobaltBlue,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  actionButtonText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  actionButtonIcon: {
+    fontSize: 14,
+  },
+  btnDisabled: {
     opacity: 0.5,
   },
-  controlBar: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    gap: 15,
-    marginVertical: 14,
-    marginHorizontal: 12,
+  
+  // Banner Warning
+  bannerWarning: {
+    backgroundColor: COLORS.terracotta + '15',
+    borderLeftColor: COLORS.terracotta,
+    borderLeftWidth: 4,
+    padding: 14,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  controlButton: {
+  bannerTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 14,
+    color: COLORS.terracotta,
+    marginRight: 8,
+  },
+  bannerText: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 12,
+    color: COLORS.terracotta,
     flex: 1,
-    paddingVertical: 18,
-    borderRadius: 13,
-    alignItems: "center",
-    marginHorizontal: 7,
-    elevation: 2,
   },
-  startButton: { backgroundColor: COLORS.oasisGreen },
-  stopButton: { backgroundColor: COLORS.terracotta },
-  statusButton: { backgroundColor: COLORS.cobaltBlue },
-  btnDisabled: { opacity: 0.5 },
-  controlButtonLabel: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  
+  // Section Title
+  sectionTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.cobaltBlue,
+  },
+  
+  // Detection Card
   detectionCard: {
     backgroundColor: "#fff",
     borderRadius: 16,
-    marginHorizontal: 16,
-    marginTop: 2,
-    padding: 21,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+    padding: 20,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.07,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
     shadowRadius: 8,
-    elevation: 2,
+    elevation: 3,
     minHeight: 70,
     justifyContent: 'center',
   },
   detectMsg: {
-    fontSize: 17,
-    fontWeight: 'bold',
-    marginTop: 9,
+    fontSize: 16,
+    fontFamily: FONTS.montserratBold,
+    marginTop: 8,
     color: COLORS.oasisGreen,
     textAlign: 'center',
     lineHeight: 24,
+  },
+  
+  // Stats Card
+  statsCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 12,
+  },
+  statItem: {
+    flex: 1,
+    backgroundColor: COLORS.cobaltBlue + "08",
+    borderRadius: 14,
+    padding: 14,
+    alignItems: 'center',
+  },
+  statLabel: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginBottom: 6,
+    fontFamily: FONTS.montserratBold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  statValue: {
+    fontSize: 20,
+    fontFamily: FONTS.orbitronBold,
+    color: COLORS.cobaltBlue,
+  },
+  
+  // History Card
+  historyCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    marginHorizontal: SPACING.lg,
+    marginBottom: 16,
+    padding: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+    maxHeight: 250,
+  },
+  racesList: {
+    maxHeight: 180,
+  },
+  raceHistoryItem: {
+    backgroundColor: COLORS.cobaltBlue + "08",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 10,
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.cobaltBlue,
+  },
+  raceHistoryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  raceHistoryTitle: {
+    fontSize: 15,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.charcoal,
+  },
+  raceHistoryDate: {
+    fontSize: 11,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.charcoal,
+    opacity: 0.5,
+  },
+  raceHistoryStats: {
+    flexDirection: 'row',
+    gap: 16,
+    marginBottom: 6,
+  },
+  raceHistoryStat: {
+    fontSize: 13,
+    fontFamily: FONTS.orbitronBold,
+    color: COLORS.cobaltBlue,
+  },
+  viewDetailsHint: {
+    fontSize: 11,
+    color: COLORS.cobaltBlue,
+    fontStyle: 'italic',
+    textAlign: 'right',
+    marginTop: 4,
+  },
+  raceHistoryDetail: {
+    fontSize: 13,
+    color: COLORS.charcoal,
+    opacity: 0.7,
+    marginBottom: 3,
+  },
+  emptyCard: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    marginHorizontal: 16,
+    marginTop: 10,
+    padding: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.cobaltBlue,
+    marginBottom: 4,
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: COLORS.charcoal,
+    opacity: 0.6,
+  },
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    width: '100%',
+    maxHeight: '85%',
+    padding: 20,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.warmStone,
+    paddingBottom: 15,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.charcoal,
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: COLORS.charcoal + '10',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeButtonText: {
+    fontSize: 18,
+    color: COLORS.charcoal,
+    fontWeight: 'bold',
+  },
+  modalSection: {
+    marginBottom: 20,
+    backgroundColor: COLORS.desertSand + '50',
+    borderRadius: 12,
+    padding: 15,
+  },
+  modalSectionTitle: {
+    fontSize: 14,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.cobaltBlue,
+    marginBottom: 10,
+    letterSpacing: 0.5,
+  },
+  modalFalconName: {
+    fontSize: 20,
+    fontFamily: FONTS.orbitronBold,
+    color: COLORS.charcoal,
+    marginBottom: 6,
+  },
+  modalDetail: {
+    fontSize: 14,
+    color: COLORS.charcoal,
+    marginBottom: 4,
+    fontFamily: FONTS.montserratRegular,
+  },
+  modalStatsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  modalStatBox: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.warmStone,
+  },
+  modalStatValue: {
+    fontSize: 24,
+    fontFamily: FONTS.orbitronBold,
+    color: COLORS.oasisGreen,
+    marginBottom: 4,
+  },
+  modalStatLabel: {
+    fontSize: 10,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.charcoal,
+    opacity: 0.6,
+    textAlign: 'center',
+  },
+  checkpointItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.oasisGreen,
+  },
+  checkpointNumber: {
+    fontSize: 12,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.oasisGreen,
+    width: 30,
+  },
+  checkpointNode: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.charcoal,
+  },
+  checkpointTime: {
+    fontSize: 14,
+    fontFamily: FONTS.orbitronBold,
+    color: COLORS.cobaltBlue,
+  },
+  checkpointSpeed: {
+    fontSize: 12,
+    fontFamily: FONTS.montserratRegular,
+    color: COLORS.oasisGreen,
+    marginLeft: 8,
+  },
+  modalCloseBtn: {
+    backgroundColor: COLORS.cobaltBlue,
+    borderRadius: 25,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  modalCloseBtnText: {
+    fontSize: 16,
+    fontFamily: FONTS.montserratBold,
+    color: '#fff',
+  },
+  // Export styles
+  historyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  exportAllButton: {
+    backgroundColor: COLORS.oasisGreen,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  exportAllButtonText: {
+    color: '#fff',
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+  },
+  exportButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 8,
+  },
+  exportButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.cobaltBlue,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    gap: 8,
+  },
+  exportButtonCSV: {
+    backgroundColor: COLORS.oasisGreen,
+  },
+  exportButtonIcon: {
+    fontSize: 18,
+  },
+  exportButtonText: {
+    color: '#fff',
+    fontFamily: FONTS.montserratBold,
+    fontSize: 14,
   },
 });
 

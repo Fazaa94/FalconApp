@@ -13,11 +13,15 @@ import {
   Alert,
   UIManager,
   LayoutAnimation,
+  Animated,
 } from 'react-native';
-import { BleManager } from 'react-native-ble-plx';
-import realm from '../db/database'; // <-- adjust path if needed
-import { COLORS, FONTS, styles } from './theme';
+import LinearGradient from 'react-native-linear-gradient';
+import Realm from 'realm';
+import realm from '../db/database'; // explicit import to avoid global warning
+import { COLORS, FONTS, SPACING, RADIUS, styles } from './theme';
 import { useRace } from '../src/context/RaceContext';
+import { useBle } from '../src/ble/BleProvider';
+import { calculateDistance, formatDistance } from '../src/utils/parser';
 
 // UUIDs (matching FalconRace-Master Arduino)
 // (Keep only one definition, remove duplicates below)
@@ -25,19 +29,23 @@ const UART_SERVICE_UUID = '00001234-0000-1000-8000-00805f9b34fb';
 const UART_TX_CHARACTERISTIC_UUID = '00001235-0000-1000-8000-00805f9b34fb'; // Notify
 const UART_RX_CHARACTERISTIC_UUID = '00001236-0000-1000-8000-00805f9b34fb'; // Write
 
-// Enable LayoutAnimation for Android
-if (
-  Platform.OS === 'android' &&
-  UIManager.setLayoutAnimationEnabledExperimental
-) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+// LayoutAnimation is handled automatically in New Architecture
 
 // Main component definition (keep only one)
 const LoRaConnectionScreen = () => {
-  const [isScanning, setIsScanning] = useState(false);
+  // Use shared BLE context for connection state
+  const { 
+    connectedDevice, 
+    scanning: isScanning, 
+    scannedDevices, 
+    connect: bleConnect, 
+    disconnect: bleDisconnect, 
+    startScan: bleStartScan, 
+    stopScan: bleStopScan,
+    write: bleWrite 
+  } = useBle();
+  
   const [foundDevices, setFoundDevices] = useState([]);
-  const [connectedDevice, setConnectedDevice] = useState(null);
   const [masterNode, setMasterNode] = useState(null); // master id and details
   const [slaveNodes, setSlaveNodes] = useState({}); // keyed by node id (live)
   const [rawMessages, setRawMessages] = useState([]); // recent raw messages (live)
@@ -46,32 +54,31 @@ const LoRaConnectionScreen = () => {
   const [isExpanded, setIsExpanded] = useState({}); // toggles for raw view
   const [isBusy, setIsBusy] = useState(false);
 
-  const bleManagerRef = useRef(null);
-  const monitorSubscriptionRef = useRef(null);
   const scanTimeoutRef = useRef(null);
 
   useEffect(() => {
-    bleManagerRef.current = new BleManager();
     requestPermissions();
     loadSavedNodesFromRealm();
-
-    const sub = bleManagerRef.current.onStateChange((state) => {
-      if (state === 'PoweredOn') {
-        console.log('Bluetooth powered on');
-      } else if (state === 'PoweredOff') {
-        Alert.alert('Bluetooth Off', 'Please enable Bluetooth to scan for devices');
-      }
-    }, true);
-
     // Load recent raw messages from Realm (optional)
     loadRecentRawMessages();
-
-    return () => {
-      sub.remove();
-      cleanup();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  
+  // Sync scannedDevices from BleProvider to local foundDevices for UI
+  useEffect(() => {
+    if (scannedDevices && scannedDevices.length > 0) {
+      setFoundDevices(prev => {
+        const newDevices = scannedDevices.map(d => ({
+          id: d.id,
+          name: d.name || d.localName || 'FalconRace',
+          device: d,
+          rssi: d.rssi,
+          status: connectedDevice?.id === d.id ? 'connected' : 'ready'
+        }));
+        return newDevices;
+      });
+    }
+  }, [scannedDevices, connectedDevice]);
 
   /* ------------------ Realm helpers ------------------ */
 
@@ -197,58 +204,13 @@ const LoRaConnectionScreen = () => {
     }
   };
 
-  /* ------------------ BLE life-cycle ------------------ */
-  const cleanup = async () => {
-    try {
-      if (scanTimeoutRef.current) {
-        clearTimeout(scanTimeoutRef.current);
-        scanTimeoutRef.current = null;
-      }
-      if (monitorSubscriptionRef.current) {
-        monitorSubscriptionRef.current.remove();
-        monitorSubscriptionRef.current = null;
-      }
-      if (bleManagerRef.current) {
-        bleManagerRef.current.stopDeviceScan();
-        bleManagerRef.current.destroy();
-      }
-    } catch (err) {
-      console.warn('Cleanup error', err);
-    }
-  };
+  /* ------------------ BLE life-cycle (using shared BleProvider) ------------------ */
 
   const startScanning = () => {
-    setIsScanning(true);
     setFoundDevices([]);
-
-    const manager = bleManagerRef.current;
-    if (!manager) return;
-
-    manager.startDeviceScan(null, null, (error, device) => {
-      if (error) {
-        console.error('Scan error:', error, 'Reason:', error?.reason);
-        Alert.alert('Scan Error', error?.reason ? String(error.reason) : String(error));
-        setIsScanning(false);
-        return;
-      }
-
-      // Filter FalconRace name
-      const name = device?.name || device?.localName;
-      if (name && name.includes('FalconRace')) {
-        setFoundDevices(prev => {
-          const exists = prev.some(d => d.id === device.id);
-          if (!exists) {
-            return [...prev, {
-              id: device.id,
-              name: name || 'FalconRace',
-              device,
-              rssi: device.rssi,
-              status: 'ready'
-            }];
-          }
-          return prev;
-        });
-      }
+    bleStartScan((device) => {
+      // Callback for each new device found
+      console.log('📱 Found device:', device.name);
     });
 
     // Stop scanning after 10s
@@ -258,8 +220,11 @@ const LoRaConnectionScreen = () => {
   };
 
   const stopScanning = () => {
-    try { bleManagerRef.current?.stopDeviceScan(); } catch (e) { console.warn(e); }
-    setIsScanning(false);
+    if (scanTimeoutRef.current) {
+      clearTimeout(scanTimeoutRef.current);
+      scanTimeoutRef.current = null;
+    }
+    bleStopScan();
   };
 
   const connectToDevice = async (devWrap) => {
@@ -268,22 +233,11 @@ const LoRaConnectionScreen = () => {
 
     setFoundDevices(prev => prev.map(d => d.id === devWrap.id ? { ...d, status: 'connecting' } : d));
     try {
-      const connected = await devWrap.device.connect();
-      await connected.discoverAllServicesAndCharacteristics();
-      // Request MTU 128 for larger packets
-      try {
-        await connected.requestMTU(128);
-        console.log('✅ MTU 128 requested');
-      } catch (mtuErr) {
-        console.warn('MTU request failed', mtuErr);
-      }
-
-      setConnectedDevice(connected);
+      // Use shared BleProvider connect - it handles all the connection logic,
+      // service discovery, MTU negotiation, and notification setup
+      await bleConnect(devWrap.id);
+      
       setFoundDevices(prev => prev.map(d => d.id === devWrap.id ? { ...d, status: 'connected' } : d));
-
-      // Setup notifications
-      await setupNotifications(connected);
-
       Alert.alert('Connected', `Connected to ${devWrap.name}`);
     } catch (err) {
       console.error('Connection error:', err, 'Reason:', err?.reason);
@@ -298,11 +252,10 @@ const LoRaConnectionScreen = () => {
     if (!connectedDevice) return;
     setIsBusy(true);
     try {
-      await connectedDevice.cancelConnection();
+      await bleDisconnect();
     } catch (e) {
       console.warn('Disconnect error', e, 'Reason:', e?.reason);
     } finally {
-      setConnectedDevice(null);
       setMasterNode(null);
       setSlaveNodes({});
       setRawMessages([]);
@@ -367,10 +320,10 @@ const LoRaConnectionScreen = () => {
         if (msg.type === 'system_status' || msg.type === 'status') {
           console.log('✅ Master status received:', JSON.stringify(msg));
         }
-    const type = msg.type;
+    let type = msg.type;
     const src = msg.src ?? msg.source ?? null;
 
-    // If type is missing but nodes array exists, treat as status
+    // Infer type when missing
     if (!type && Array.isArray(msg.nodes)) {
       // Node roster
       setMasterNode(prev => ({
@@ -390,6 +343,15 @@ const LoRaConnectionScreen = () => {
         return updated;
       });
       return;
+    }
+    if (!type && typeof msg.status === 'string') {
+      type = 'race';
+    }
+    if (!type && (msg.payload === '101' || msg.payload === 'The Falcon Has Been Detected')) {
+      type = 'falcon';
+    }
+    if (!type && msg.payload && msg.src) {
+      type = 'detection';
     }
 
     switch (type) {
@@ -570,8 +532,29 @@ const LoRaConnectionScreen = () => {
         } catch {}
         break;
       }
+      case 'race': {
+        const started = typeof msg.status === 'string' && msg.status.toLowerCase().includes('started');
+        const stopped = typeof msg.status === 'string' && msg.status.toLowerCase().includes('stopped');
+        try {
+          raceContext.dispatch({
+            type: 'SET_STATUS',
+            payload: {
+              connected: true,
+              race_active: started ? true : stopped ? false : undefined,
+              ts_received: Date.now(),
+            }
+          });
+        } catch {}
+        break;
+      }
+      case 'falcon':
+      case 'detection': {
+        // Minimal UI hook: mark last detection
+        setRawMessages(prev => [{ ts: Date.now(), raw: msg }, ...prev].slice(0, 200));
+        break;
+      }
       default:
-        console.log('Unknown message type:', type, msg);
+        // Unknown type - keep logs concise
     }
 
     // Persist minimal node info (if src exists)
@@ -716,133 +699,232 @@ const LoRaConnectionScreen = () => {
   /* ------------------ Render ------------------ */
   // Debug panel: show last received BLE message
   const lastRawMsg = rawMessages.length > 0 ? rawMessages[0].raw : null;
+  const raceState = raceContext?.state || {};
+  const onlineNodes = Object.values(raceState.nodes || {}).filter(n => n.lastSeen && (Date.now() - n.lastSeen < 120000));
+  const battery = raceState.status?.battery;
+  const batteryPercent = battery ? Math.min(100, Math.max(0, ((battery - 3.0) / 1.2) * 100)) : null;
+  
+  // Master GPS for distance calculations
+  const masterGps = raceState.gps || raceState.status;
+  const masterLat = masterGps?.lat;
+  const masterLng = masterGps?.lng;
 
   return (
     <View style={styles.screen}>
-      <StatusBar backgroundColor={COLORS.desertSand} barStyle="dark-content" />
-      <View style={localStyles.header}>
-        <Text style={localStyles.mainTitle}>FalconRace — Master & Slave Monitor</Text>
-      </View>
-
-      {/* Debug Panel - visible in UI */}
-      <View style={{ backgroundColor: '#FFFDE7', borderColor: '#FFD600', borderWidth: 2, borderRadius: 8, margin: 12, padding: 10 }}>
-        <Text style={{ color: '#333', fontFamily: FONTS.montserratBold, fontSize: 14 }}>Debug: Last BLE Message</Text>
-        <Text style={{ color: '#444', fontFamily: FONTS.orbitronBold, fontSize: 12 }}>{lastRawMsg ? lastRawMsg : 'No message received yet.'}</Text>
-        <TouchableOpacity style={{ marginTop: 8, backgroundColor: '#F97316', padding: 6, borderRadius: 6, alignSelf: 'flex-start' }} onPress={() => setRawMessages([])}>
-          <Text style={{ color: '#fff', fontFamily: FONTS.montserratBold }}>Clear Recent Raw Messages</Text>
-        </TouchableOpacity>
-      </View>
+      <StatusBar backgroundColor={COLORS.cobaltBlue} barStyle="light-content" />
+      
+      {/* Premium Header */}
+      <LinearGradient
+        colors={[COLORS.cobaltBlue, '#0D47A1']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={localStyles.premiumHeader}
+      >
+        <View style={localStyles.headerContent}>
+          <View style={localStyles.headerLeft}>
+            <Text style={localStyles.headerTitle}>🦅 Dashboard</Text>
+            <Text style={localStyles.headerSubtitle}>BLE Device Control</Text>
+          </View>
+          <View style={localStyles.headerRight}>
+            {/* Connection Status */}
+            <View style={[
+              localStyles.connectionBadge,
+              { backgroundColor: connectedDevice ? 'rgba(76,175,80,0.3)' : 'rgba(244,67,54,0.3)' }
+            ]}>
+              <View style={[
+                localStyles.connectionDot,
+                { backgroundColor: connectedDevice ? '#4CAF50' : '#F44336' }
+              ]} />
+              <Text style={localStyles.connectionText}>
+                {connectedDevice ? 'CONNECTED' : 'OFFLINE'}
+              </Text>
+            </View>
+            {/* Battery */}
+            {battery != null && typeof battery === 'number' && (
+              <View style={localStyles.batteryBadge}>
+                <Text style={localStyles.batteryEmoji}>🔋</Text>
+                <Text style={localStyles.batteryText}>{String(battery.toFixed(1))}V</Text>
+              </View>
+            )}
+          </View>
+        </View>
+        
+        {/* Quick Stats Row */}
+        <View style={localStyles.quickStats}>
+          <View style={localStyles.quickStatItem}>
+            <Text style={localStyles.quickStatValue}>{onlineNodes.length}</Text>
+            <Text style={localStyles.quickStatLabel}>NODES</Text>
+          </View>
+          <View style={localStyles.quickStatDivider} />
+          <View style={localStyles.quickStatItem}>
+            <Text style={localStyles.quickStatValue}>{batteryPercent ? `${Math.round(batteryPercent)}%` : '--'}</Text>
+            <Text style={localStyles.quickStatLabel}>BATTERY</Text>
+          </View>
+          <View style={localStyles.quickStatDivider} />
+          <View style={localStyles.quickStatItem}>
+            <Text style={localStyles.quickStatValue}>{raceState.status?.race_active ? '🦅' : '⏸️'}</Text>
+            <Text style={localStyles.quickStatLabel}>{raceState.status?.race_active ? 'RACING' : 'IDLE'}</Text>
+          </View>
+        </View>
+      </LinearGradient>
 
       <ScrollView style={localStyles.scrollView} contentContainerStyle={localStyles.scrollContent} showsVerticalScrollIndicator={false}>
 
         {/* Start Scan Button */}
         {!isScanning && foundDevices.length === 0 && !connectedDevice && (
-          <TouchableOpacity style={localStyles.scanButton} onPress={startScanning}>
-            <Text style={localStyles.scanButtonText}>START SCAN</Text>
+          <TouchableOpacity style={localStyles.premiumScanButton} onPress={startScanning} activeOpacity={0.8}>
+            <LinearGradient
+              colors={[COLORS.cobaltBlue, '#0D47A1']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={localStyles.scanButtonGradient}
+            >
+              <Text style={localStyles.scanButtonIcon}>📡</Text>
+              <Text style={localStyles.premiumScanButtonText}>SCAN FOR DEVICES</Text>
+            </LinearGradient>
           </TouchableOpacity>
         )}
 
         {/* Scanning */}
-        {isScanning && <View style={localStyles.scanningSection}>
-          <ActivityIndicator size="large" color={COLORS.cobaltBlue} />
-          <Text style={localStyles.scanningText}>Scanning for FalconRace devices...</Text>
-        </View>}
+        {isScanning && (
+          <View style={localStyles.scanningCard}>
+            <ActivityIndicator size="large" color={COLORS.cobaltBlue} />
+            <Text style={localStyles.scanningText}>Scanning for FalconRace devices...</Text>
+            <TouchableOpacity style={localStyles.cancelScanButton} onPress={stopScanning}>
+              <Text style={localStyles.cancelScanButtonText}>STOP</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Found Devices */}
         {!connectedDevice && foundDevices.length > 0 && (
-          <View style={localStyles.devicesSection}>
-            <Text style={localStyles.sectionTitle}>Found Devices</Text>
+          <View style={localStyles.premiumCard}>
+            <View style={localStyles.cardHeader}>
+              <Text style={localStyles.cardIcon}>📱</Text>
+              <Text style={localStyles.cardTitle}>Found Devices</Text>
+            </View>
             {foundDevices.map((d) => (
-              <TouchableOpacity key={d.id} style={[localStyles.deviceItem, d.status === 'connected' && localStyles.connectedDevice]} onPress={() => connectToDevice(d)} disabled={d.status === 'connecting' || d.status === 'connected' || isBusy}>
+              <TouchableOpacity 
+                key={d.id} 
+                style={[localStyles.deviceCard, d.status === 'connected' && localStyles.deviceCardConnected]} 
+                onPress={() => connectToDevice(d)} 
+                disabled={d.status === 'connecting' || d.status === 'connected' || isBusy}
+                activeOpacity={0.7}
+              >
                 <View style={localStyles.deviceInfo}>
                   <Text style={localStyles.deviceName}>{d.name}</Text>
                   <View style={localStyles.deviceStatusRow}>
-                    <View style={[localStyles.statusDot, { backgroundColor: d.status === 'ready' ? COLORS.successGreen : COLORS.terracotta }]} />
+                    <View style={[localStyles.statusDot, { backgroundColor: d.status === 'ready' ? COLORS.oasisGreen : COLORS.sunYellow }]} />
                     <Text style={localStyles.statusText}>{d.status}</Text>
                   </View>
                 </View>
-                <Text style={localStyles.signalText}>{d.rssi ?? 'N/A'} dBm</Text>
+                <View style={localStyles.signalBadge}>
+                  <Text style={localStyles.signalText}>{d.rssi ?? 'N/A'}</Text>
+                  <Text style={localStyles.signalUnit}>dBm</Text>
+                </View>
               </TouchableOpacity>
             ))}
 
-            <TouchableOpacity style={localStyles.cancelButton} onPress={() => { stopScanning(); setFoundDevices([]); }}>
-              <Text style={localStyles.cancelButtonText}>CANCEL</Text>
+            <TouchableOpacity style={localStyles.secondaryButton} onPress={() => { stopScanning(); setFoundDevices([]); }}>
+              <Text style={localStyles.secondaryButtonText}>CANCEL</Text>
             </TouchableOpacity>
           </View>
         )}
 
         {/* Connected Device */}
         {connectedDevice && (
-          <View style={localStyles.connectedSection}>
-            <Text style={localStyles.sectionTitle}>Connected Device</Text>
-            <View style={localStyles.connectedCard}>
-              <Text style={localStyles.connectedDeviceName}>{connectedDevice.name || connectedDevice.id}</Text>
-              <Text style={localStyles.smallText}>ID: {connectedDevice.id}</Text>
-              <Text style={localStyles.smallText}>RSSI / Real-time messages below</Text>
-              <Text style={localStyles.smallText}>Go to Race Control page to start/stop races</Text>
-
-              <View style={localStyles.commandButtons}>
-                <TouchableOpacity style={localStyles.sendButton} onPress={() => sendCommand('RESET')}>
-                  <Text style={localStyles.sendButtonText}>RESET</Text>
+          <View style={localStyles.premiumCard}>
+            <View style={localStyles.cardHeader}>
+              <Text style={localStyles.cardIcon}>✅</Text>
+              <Text style={localStyles.cardTitle}>Connected Device</Text>
+            </View>
+            <View style={localStyles.connectedDeviceCard}>
+              <Text style={localStyles.connectedDeviceName}>{connectedDevice.name || 'FalconRace Master'}</Text>
+              <Text style={localStyles.deviceId}>{connectedDevice.id}</Text>
+              
+              <View style={localStyles.actionButtonsRow}>
+                <TouchableOpacity style={localStyles.actionButton} onPress={sendGetStatus} activeOpacity={0.8}>
+                  <Text style={localStyles.actionButtonIcon}>📡</Text>
+                  <Text style={localStyles.actionButtonText}>STATUS</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={localStyles.actionButton} onPress={() => sendCommand('RESET')} activeOpacity={0.8}>
+                  <Text style={localStyles.actionButtonIcon}>🔄</Text>
+                  <Text style={localStyles.actionButtonText}>RESET</Text>
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity style={localStyles.disconnectBtn} onPress={disconnectDevice}>
-                <Text style={localStyles.disconnectBtnText}>DISCONNECT</Text>
+              <TouchableOpacity style={localStyles.disconnectButton} onPress={disconnectDevice} activeOpacity={0.8}>
+                <Text style={localStyles.disconnectButtonText}>DISCONNECT</Text>
               </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* Master Node */}
-        <View style={localStyles.masterSection}>
-          <Text style={localStyles.sectionTitle}>Master Node</Text>
+        {/* Node Grid */}
+        <View style={localStyles.premiumCard}>
+          <View style={localStyles.cardHeader}>
+            <Text style={localStyles.cardIcon}>🌐</Text>
+            <Text style={localStyles.cardTitle}>Online Nodes ({onlineNodes.length})</Text>
+          </View>
+          
           {/* Get Status Button */}
-          <TouchableOpacity style={localStyles.sendButton} onPress={sendGetStatus}>
-            <Text style={localStyles.sendButtonText}>GET STATUS</Text>
+          <TouchableOpacity style={localStyles.getStatusButton} onPress={sendGetStatus} activeOpacity={0.8}>
+            <Text style={localStyles.getStatusIcon}>📡</Text>
+            <Text style={localStyles.getStatusText}>GET STATUS</Text>
           </TouchableOpacity>
-          {(connectedDevice || masterNode) ? (
-            <View style={localStyles.nodeCard}>
-              <View style={localStyles.nodeHeader}>
-                <Text style={localStyles.nodeTitle}>Master ID: {masterNode?.id || connectedDevice?.id || 'Connected'}</Text>
-                {masterNode?.id && (
-                  <TouchableOpacity onPress={() => saveNode(masterNode.id)} style={localStyles.saveBtn}>
-                    <Text style={localStyles.saveBtnText}>Save</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-              <Text style={localStyles.smallText}>Last Seen: {masterNode?.lastSeen || 'Connected'}</Text>
-              {masterNode?.lastMsg && (
-                <>
-                  <Text style={localStyles.subTitle}>Last Message</Text>
-                  <Text style={localStyles.monoText}>{JSON.stringify(masterNode.lastMsg, null, 2)}</Text>
-                </>
-              )}
+          
+          {onlineNodes.length > 0 ? (
+            <View style={localStyles.nodeGrid}>
+              {onlineNodes.map((node) => {
+                const isOnline = Date.now() - node.lastSeen < 60000;
+                const hasBattery = node.battery != null && typeof node.battery === 'number';
+                const hasRssi = node.rssi != null && typeof node.rssi === 'number';
+                const hasGps = node.lat != null && node.lng != null;
+                const distanceFromMaster = hasGps && masterLat != null && masterLng != null
+                  ? calculateDistance(masterLat, masterLng, node.lat, node.lng)
+                  : null;
+                return (
+                  <View key={node.id} style={[localStyles.nodeGridItem, isOnline ? localStyles.nodeGridOnline : localStyles.nodeGridOffline]}>
+                    <View style={[localStyles.nodeGridDot, { backgroundColor: isOnline ? COLORS.oasisGreen : COLORS.terracotta }]} />
+                    <Text style={localStyles.nodeGridNumber}>{node.id}</Text>
+                    <Text style={localStyles.nodeGridLabel}>NODE</Text>
+                    {hasBattery && (
+                      <Text style={localStyles.nodeGridBattery}>🔋 {node.battery.toFixed(1)}V</Text>
+                    )}
+                    {hasRssi && (
+                      <Text style={localStyles.nodeGridRssi}>📶 {node.rssi}dB</Text>
+                    )}
+                    {distanceFromMaster != null && (
+                      <Text style={localStyles.nodeGridDistance}>📍 {formatDistance(distanceFromMaster)}</Text>
+                    )}
+                  </View>
+                );
+              })}
             </View>
           ) : (
-            <Text style={localStyles.noNodesText}>No master detected yet</Text>
+            <View style={localStyles.emptyState}>
+              <Text style={localStyles.emptyStateIcon}>📡</Text>
+              <Text style={localStyles.emptyStateText}>No nodes online</Text>
+              <Text style={localStyles.emptyStateSubtext}>Tap GET STATUS to refresh</Text>
+            </View>
           )}
         </View>
 
-        {/* Online Nodes */}
-        <View style={localStyles.slavesSection}>
-          <Text style={localStyles.sectionTitle}>Online Nodes ({Object.keys(slaveNodes).length})</Text>
-          {Object.keys(slaveNodes).length > 0 ? (
-            Object.keys(slaveNodes).map((nodeId) => (
-              <View key={nodeId} style={localStyles.nodeCard}>
-                <View style={localStyles.nodeHeader}>
-                  <Text style={localStyles.nodeTitle}>Node {nodeId} Online</Text>
-                </View>
-                <View style={localStyles.nodeBody}>
-                  <Text style={localStyles.smallText}>Node ID: {nodeId}</Text>
-                  <Text style={localStyles.smallText}>Last Seen: {slaveNodes[nodeId].lastSeen}</Text>
-                </View>
-              </View>
-            ))
-          ) : (
-            <Text style={localStyles.noNodesText}>No nodes online</Text>
-          )}
-        </View>
+        {/* Master Node - Legacy section */}
+        {(masterNode) && (
+          <View style={localStyles.premiumCard}>
+            <View style={localStyles.cardHeader}>
+              <Text style={localStyles.cardIcon}>👑</Text>
+              <Text style={localStyles.cardTitle}>Master Node</Text>
+            </View>
+            <View style={localStyles.masterNodeCard}>
+              <Text style={localStyles.masterNodeId}>ID: {masterNode?.id || 'Connected'}</Text>
+              <Text style={localStyles.masterNodeTime}>
+                Last seen: {masterNode?.lastSeen ? new Date(masterNode.lastSeen).toLocaleTimeString() : 'Now'}
+              </Text>
+            </View>
+          </View>
+        )}
 
         {/* Saved Nodes */}
         <View style={localStyles.savedSection}>
@@ -863,17 +945,6 @@ const LoRaConnectionScreen = () => {
           )}
         </View>
 
-        {/* Recent raw messages */}
-        <View style={localStyles.rawSection}>
-          <Text style={localStyles.sectionTitle}>Recent Raw Messages</Text>
-          {rawMessages.map((m, idx) => (
-            <View key={m.ts + '_' + idx} style={localStyles.rawItem}>
-              <Text style={localStyles.smallText}>{new Date(m.ts).toLocaleTimeString()}</Text>
-              <Text style={localStyles.monoText}>{m.raw}</Text>
-            </View>
-          ))}
-        </View>
-
       </ScrollView>
     </View>
   );
@@ -881,62 +952,497 @@ const LoRaConnectionScreen = () => {
 
 // Styles (keep only one definition)
 const localStyles = StyleSheet.create({
+  // Premium Header
+  premiumHeader: {
+    paddingTop: 16,
+    paddingBottom: 20,
+    paddingHorizontal: SPACING.lg,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  headerContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerLeft: {
+    flex: 1,
+  },
+  headerTitle: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 20,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  headerSubtitle: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.8)',
+    marginTop: 4,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  connectionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  connectionDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 5,
+  },
+  connectionText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  batteryBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  batteryEmoji: {
+    fontSize: 12,
+    marginRight: 4,
+  },
+  batteryText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 10,
+    color: '#FFFFFF',
+  },
+  
+  // Quick Stats
+  quickStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 16,
+    marginTop: 16,
+    paddingVertical: 12,
+  },
+  quickStatItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  quickStatValue: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 18,
+    color: '#FFFFFF',
+  },
+  quickStatLabel: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.7)',
+    marginTop: 2,
+    letterSpacing: 1,
+  },
+  quickStatDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  
+  // Scroll area
+  scrollView: { flex: 1, backgroundColor: COLORS.desertSand },
+  scrollContent: { paddingHorizontal: 16, paddingBottom: 80, paddingTop: 20 },
+  
+  // Premium Scan Button
+  premiumScanButton: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    marginBottom: 16,
+    shadowColor: COLORS.cobaltBlue,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  scanButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 18,
+    paddingHorizontal: 32,
+    gap: 12,
+  },
+  scanButtonIcon: {
+    fontSize: 20,
+  },
+  premiumScanButtonText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  
+  // Scanning state
+  scanningCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 32,
+    alignItems: 'center',
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  scanningText: {
+    fontFamily: FONTS.montserratBold,
+    marginTop: 16,
+    color: COLORS.charcoal,
+    fontSize: 14,
+  },
+  cancelScanButton: {
+    marginTop: 16,
+    backgroundColor: COLORS.terracotta + '15',
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  cancelScanButtonText: {
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.terracotta,
+    fontSize: 12,
+  },
+  
+  // Premium Card
+  premiumCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  cardIcon: {
+    fontSize: 20,
+    marginRight: 10,
+  },
+  cardTitle: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.charcoal,
+    letterSpacing: 0.3,
+  },
+  
+  // Device Cards
+  deviceCard: {
+    backgroundColor: COLORS.desertSand + '80',
+    padding: 14,
+    borderRadius: 14,
+    marginBottom: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  deviceCardConnected: {
+    borderColor: COLORS.oasisGreen,
+    backgroundColor: COLORS.oasisGreen + '10',
+  },
+  deviceInfo: { flex: 1 },
+  deviceName: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 15,
+    color: COLORS.charcoal,
+  },
+  deviceStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  statusText: {
+    fontFamily: FONTS.montserratRegular,
+    color: COLORS.textMuted,
+    fontSize: 12,
+  },
+  signalBadge: {
+    alignItems: 'center',
+    backgroundColor: COLORS.cobaltBlue + '15',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+  },
+  signalText: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 14,
+    color: COLORS.cobaltBlue,
+  },
+  signalUnit: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 9,
+    color: COLORS.textMuted,
+  },
+  secondaryButton: {
+    backgroundColor: COLORS.terracotta + '15',
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  secondaryButtonText: {
+    fontFamily: FONTS.montserratBold,
+    color: COLORS.terracotta,
+    fontSize: 14,
+  },
+  
+  // Connected Device Card
+  connectedDeviceCard: {
+    backgroundColor: COLORS.oasisGreen + '08',
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.oasisGreen + '30',
+  },
+  connectedDeviceName: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 18,
+    color: COLORS.charcoal,
+    marginBottom: 4,
+  },
+  deviceId: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginBottom: 16,
+  },
+  actionButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  actionButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.cobaltBlue,
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 6,
+  },
+  actionButtonIcon: {
+    fontSize: 14,
+  },
+  actionButtonText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
+    color: '#FFFFFF',
+  },
+  disconnectButton: {
+    backgroundColor: COLORS.terracotta,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  disconnectButtonText: {
+    fontFamily: FONTS.montserratBold,
+    color: '#FFFFFF',
+    fontSize: 14,
+  },
+  
+  // Get Status Button
+  getStatusButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.cobaltBlue,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+  },
+  getStatusIcon: {
+    fontSize: 16,
+  },
+  getStatusText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 14,
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  
+  // Node Grid
+  nodeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  nodeGridItem: {
+    width: 70,
+    height: 70,
+    borderRadius: 18,
+    backgroundColor: COLORS.desertSand,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  nodeGridOnline: {
+    borderWidth: 2,
+    borderColor: COLORS.oasisGreen,
+    backgroundColor: COLORS.oasisGreen + '08',
+  },
+  nodeGridOffline: {
+    borderWidth: 2,
+    borderColor: COLORS.terracotta + '40',
+    opacity: 0.6,
+  },
+  nodeGridNumber: {
+    fontFamily: FONTS.orbitronBold,
+    fontSize: 22,
+    color: COLORS.cobaltBlue,
+  },
+  nodeGridLabel: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 9,
+    color: COLORS.textMuted,
+    marginTop: 2,
+    letterSpacing: 1,
+  },
+  nodeGridBattery: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 10,
+    color: COLORS.oasisGreen,
+    marginTop: 4,
+  },
+  nodeGridRssi: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 10,
+    color: COLORS.cobaltBlue,
+    marginTop: 2,
+  },
+  nodeGridDistance: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 10,
+    color: COLORS.terracotta,
+    marginTop: 2,
+  },
+  nodeGridDot: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  
+  // Empty State
+  emptyState: {
+    alignItems: 'center',
+    padding: 24,
+  },
+  emptyStateIcon: {
+    fontSize: 48,
+    opacity: 0.5,
+    marginBottom: 12,
+  },
+  emptyStateText: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 16,
+    color: COLORS.charcoal,
+    marginBottom: 4,
+  },
+  emptyStateSubtext: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 12,
+    color: COLORS.textMuted,
+  },
+  
+  // Master Node Card
+  masterNodeCard: {
+    backgroundColor: COLORS.cobaltBlue + '08',
+    padding: 14,
+    borderRadius: 12,
+  },
+  masterNodeId: {
+    fontFamily: FONTS.montserratBold,
+    fontSize: 14,
+    color: COLORS.charcoal,
+  },
+  masterNodeTime: {
+    fontFamily: FONTS.montserratRegular,
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 4,
+  },
+  
+  // Legacy styles (kept for compatibility)
   header: { marginBottom: 12, alignItems: 'center' },
   mainTitle: { fontFamily: FONTS.orbitronBold, fontSize: 20, color: '#111827', fontWeight: '700' },
-  scrollView: { flex: 1, backgroundColor: '#F3F4F6' }, // Paper-white sunlight bg
-  scrollContent: { paddingHorizontal: 16, paddingBottom: 80 },
-  scanButton: { backgroundColor: '#2563EB', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginVertical: 8 }, // Royal blue
-  scanButtonText: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#000', fontWeight: '700' },
-  scanningSection: { alignItems: 'center', paddingVertical: 20 },
-  scanningText: { fontFamily: FONTS.montserratRegular, marginTop: 8, color: '#111827', fontWeight: '600' },
-  devicesSection: { marginVertical: 12 },
-  sectionTitle: { fontFamily: FONTS.montserratBold, fontSize: 18, color: '#000', marginBottom: 8, fontWeight: '700', textTransform: 'uppercase' },
-  deviceItem: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 8, marginBottom: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 2, borderColor: '#9CA3AF' },
-  connectedDevice: { borderColor: '#16A34A', borderWidth: 2 }, // Emerald green
-  deviceInfo: { flex: 1 },
-  deviceName: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#111827', fontWeight: '700' },
-  deviceStatusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
-  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  statusText: { fontFamily: FONTS.montserratRegular, color: '#111827', fontWeight: '600' },
-  signalText: { fontFamily: FONTS.montserratRegular, color: '#374151' },
-  cancelButton: { backgroundColor: '#F97316', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 8 }, // Safety orange
-  cancelButtonText: { fontFamily: FONTS.montserratBold, color: '#FFFFFF', fontWeight: '700' },
-
+  scanButton: { backgroundColor: '#2563EB', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginVertical: 8 },
+  scanButtonText: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#fff', fontWeight: '700' },
+  sectionTitle: { fontFamily: FONTS.montserratBold, fontSize: 16, color: COLORS.charcoal, marginBottom: 12, letterSpacing: 0.5 },
+  
   connectedSection: { marginVertical: 12 },
   connectedCard: { backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 2, borderColor: '#9CA3AF' },
-  connectedDeviceName: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#111827', fontWeight: '700' },
   smallText: { fontFamily: FONTS.montserratRegular, fontSize: 13, color: '#374151' },
   commandButtons: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 },
-  sendButton: { backgroundColor: '#16A34A', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8 }, // Emerald green
+  sendButton: { backgroundColor: COLORS.oasisGreen, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8 },
   sendButtonText: { fontFamily: FONTS.montserratBold, color: '#FFFFFF', fontWeight: '700' },
-  disconnectBtn: { backgroundColor: '#F97316', marginTop: 12, paddingVertical: 10, borderRadius: 8, alignItems: 'center' }, // Safety orange
+  disconnectBtn: { backgroundColor: COLORS.terracotta, marginTop: 12, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   disconnectBtnText: { fontFamily: FONTS.montserratBold, color: '#FFFFFF', fontWeight: '700' },
 
   masterSection: { marginVertical: 12 },
-  nodeCard: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 10, marginBottom: 10, borderWidth: 2, borderColor: '#9CA3AF' },
+  nodeCard: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 14, marginBottom: 10, borderWidth: 1, borderColor: COLORS.warmStone },
   nodeHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  nodeTitle: { fontFamily: FONTS.montserratBold, fontSize: 16, color: '#111827', fontWeight: '700' },
-  saveBtn: { backgroundColor: '#2563EB', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 }, // Royal blue
-  saveBtnText: { color: '#FFFFFF', fontFamily: FONTS.montserratBold, fontWeight: '700' },
-  expandBtn: { marginLeft: 8, backgroundColor: '#F3F4F6', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 },
-  expandBtnText: { fontFamily: FONTS.montserratBold, color: '#111827', fontWeight: '700' },
-
+  nodeTitle: { fontFamily: FONTS.montserratBold, fontSize: 15, color: COLORS.charcoal },
   nodeBody: { marginTop: 8 },
-  subTitle: { fontFamily: FONTS.montserratBold, fontSize: 14, marginTop: 8, color: '#374151', fontWeight: '700', textTransform: 'uppercase' },
-  monoText: { fontFamily: FONTS.orbitronBold, fontSize: 20, marginTop: 6, color: '#000', letterSpacing: 1 }, // Digital watch style
-  rawBox: { marginTop: 8, backgroundColor: '#E5E7EB', padding: 8, borderRadius: 6, borderWidth: 2, borderColor: '#9CA3AF' },
 
   slavesSection: { marginVertical: 12 },
-
   savedSection: { marginVertical: 12 },
-  savedItem: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 8, marginBottom: 6, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 2, borderColor: '#9CA3AF' },
-  removeBtn: { backgroundColor: '#F97316', paddingVertical: 6, paddingHorizontal: 8, borderRadius: 6 }, // Safety orange
+  savedItem: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 10, marginBottom: 6, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: COLORS.warmStone },
+  removeBtn: { backgroundColor: COLORS.terracotta, paddingVertical: 6, paddingHorizontal: 8, borderRadius: 6 },
   removeBtnText: { color: '#FFFFFF', fontFamily: FONTS.montserratBold, fontWeight: '700' },
 
   rawSection: { marginVertical: 12 },
-  rawItem: { backgroundColor: '#FFFFFF', padding: 8, borderRadius: 8, marginBottom: 6, borderWidth: 2, borderColor: '#9CA3AF' },
-
-  noNodesText: { fontFamily: FONTS.montserratRegular, color: '#374151' },
+  rawItem: { backgroundColor: '#FFFFFF', padding: 10, borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: COLORS.warmStone },
+  monoText: { fontFamily: FONTS.orbitronBold, fontSize: 12, color: COLORS.charcoal },
+  noNodesText: { fontFamily: FONTS.montserratRegular, color: COLORS.textMuted, textAlign: 'center', padding: 20 },
+  
+  // Mesh Network
+  meshSection: { marginVertical: 12 },
+  meshNodeItem: { backgroundColor: '#FFFFFF', padding: 12, borderRadius: 12, marginBottom: 8 },
+  meshNodeInfo: {},
+  meshNodeName: { fontFamily: FONTS.montserratBold, fontSize: 14, color: COLORS.charcoal },
+  meshNodeStatus: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  meshNodeStatusText: { fontFamily: FONTS.montserratRegular, fontSize: 12, color: COLORS.textMuted, marginLeft: 6 },
+  detectionTime: { fontFamily: FONTS.montserratRegular, fontSize: 11, color: COLORS.textMuted, marginTop: 4 },
 });
 
 export default LoRaConnectionScreen;

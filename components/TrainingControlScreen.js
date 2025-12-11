@@ -107,39 +107,87 @@ const TrainingControlScreen = () => {
 
   // --- ACTIONS ---
 
-  const handleStart = () => {
+  const handleStart = async () => {
     if (!selectedFalcon) return Alert.alert('Missing Info', 'Select a bird.');
     if (!inputs.weight) return Alert.alert('Missing Info', 'Enter flying weight.');
     if (!inputs.wind || !inputs.temp) return Alert.alert('Missing Info', 'Enter Wind & Temp for data comparison.');
-    if (!connectedDevice) return Alert.alert('Offline', 'Connect system first.');
+    if (!connectedDevice) return Alert.alert('Offline', 'Connect to master node from Dashboard first.');
 
-    if (write) write('start_race');
+    console.log('🚀 Training: Sending start_race command...');
+    console.log('📡 Connected device:', connectedDevice?.id);
+    console.log('📝 Write function available:', !!write);
+    
+    try {
+      if (write) {
+        const success = await write('start_race');
+        console.log('✅ start_race command sent, result:', success);
+      } else {
+        console.error('❌ Write function not available');
+        Alert.alert('Error', 'BLE write function not available. Reconnect from Dashboard.');
+        return;
+      }
+    } catch (err) {
+      console.error('❌ Failed to send start_race:', err);
+      Alert.alert('Command Failed', 'Could not send start command to device.');
+      return;
+    }
+    
     setIsSessionActive(true);
     setSessionStartTime(Date.now());
   };
 
-  const handleStop = () => {
-    if (write) write('stop_race');
+  const handleStop = async () => {
+    console.log('🛑 Training: Sending stop_race command...');
+    
+    try {
+      if (write) {
+        const success = await write('stop_race');
+        console.log('✅ stop_race command sent, result:', success);
+      }
+    } catch (err) {
+      console.error('❌ Failed to send stop_race:', err);
+    }
+    
     setIsSessionActive(false);
 
     // Create Trial Record
     const trialNumber = todaysTrials.length + 1;
+    const durationMinutes = sectorAnalysis.totalTime ? parseFloat(sectorAnalysis.totalTime) / 60 : 0;
+    
+    // Calculate distance based on highest node ID detected (each node = 100m from start)
+    // Master (src:1) = 0m (starting gate), Node 2 = 100m, Node 3 = 200m, etc.
+    const nodeIds = sessionDetections.map(d => parseInt(d.nodeId) || 0);
+    const maxNodeId = nodeIds.length > 0 ? Math.max(...nodeIds) : 0;
+    const totalDistance = maxNodeId > 1 ? (maxNodeId - 1) * 100 : 0; // Node 1 = 0m, Node 2 = 100m, etc.
     
     const result = {
       id: uuid.v4(),
       falconId: selectedFalcon.id,
+      animalId: selectedFalcon.animalId || selectedFalcon.id, // Use animalId or fallback to id
       falconName: selectedFalcon.falconName,
+      sessionType: 'speed', // Default to speed training
       sessionDate: new Date(),
-      mode: 'Telwah',
-      trialNumber: trialNumber,
-      // Performance
-      weight: parseFloat(inputs.weight),
-      topSpeed: parseFloat(sectorAnalysis.topSpeed),
-      totalTime: parseFloat(sectorAnalysis.totalTime),
-      // Environment (The new comparison data)
-      temp: parseFloat(inputs.temp),
-      windSpeed: parseFloat(inputs.wind),
-      humidity: parseFloat(inputs.humidity) || 0,
+      duration: durationMinutes,
+      totalDistance: totalDistance,
+      focusArea: 'acceleration',
+      trainingNotes: `Trial #${trialNumber} - Weight: ${inputs.weight}g, Wind: ${inputs.wind}km/h, Temp: ${inputs.temp}°C. Nodes detected: ${nodeIds.join(', ')}`,
+      weatherConditions: `Temp: ${inputs.temp}°C, Wind: ${inputs.wind}km/h, Humidity: ${inputs.humidity}%`,
+      trackConditions: 'Good',
+      trainerName: '',
+      sessionRating: null,
+      heartRateData: [],
+      performanceMetrics: {
+        id: uuid.v4(),
+        averageSpeed: 0,
+        maxSpeed: parseFloat(sectorAnalysis.topSpeed) || 0,
+        accelerationTime: null,
+        decelerationPoints: null,
+        consistencyScore: null,
+        enduranceIndex: null,
+      },
+      drills: [],
+      synced: false,
+      createdAt: new Date(),
     };
 
     try {
@@ -148,6 +196,44 @@ const TrainingControlScreen = () => {
     } catch (e) {
       console.error(e);
     }
+  };
+
+  // Reset today's trials for selected falcon
+  const handleResetTrials = () => {
+    if (!selectedFalcon) {
+      Alert.alert('No Falcon Selected', 'Please select a falcon first.');
+      return;
+    }
+    
+    Alert.alert(
+      'Reset Trials?',
+      `This will delete all of today's trials for ${selectedFalcon.falconName}. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            try {
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              
+              realm.write(() => {
+                const trialsToDelete = realm.objects('TrainingSession')
+                  .filtered('falconId == $0 AND sessionDate >= $1', selectedFalcon.id, today);
+                realm.delete(trialsToDelete);
+              });
+              
+              setTodaysTrials([]);
+              Alert.alert('Reset Complete', `Trials for ${selectedFalcon.falconName} have been cleared.`);
+            } catch (e) {
+              console.error('Reset error:', e);
+              Alert.alert('Reset Failed', e.message);
+            }
+          }
+        }
+      ]
+    );
   };
 
   // --- UI COMPONENTS ---
@@ -250,22 +336,27 @@ const TrainingControlScreen = () => {
         {/* 4. Comparison Table (THE NEW FEATURE) */}
         {selectedFalcon && todaysTrials.length > 0 && (
             <View style={localStyles.section}>
-                <Text style={localStyles.sectionTitle}>TODAY'S TRIALS (COMPARISON)</Text>
+                <View style={localStyles.sectionHeaderRow}>
+                  <Text style={localStyles.sectionTitle}>TODAY'S TRIALS ({todaysTrials.length})</Text>
+                  <TouchableOpacity style={localStyles.resetButton} onPress={handleResetTrials}>
+                    <Text style={localStyles.resetButtonText}>🗑️ Reset</Text>
+                  </TouchableOpacity>
+                </View>
                 
                 <View style={localStyles.tableHeader}>
                     <Text style={[localStyles.th, {flex:0.5}]}>#</Text>
-                    <Text style={[localStyles.th, {flex:1}]}>WIND</Text>
-                    <Text style={[localStyles.th, {flex:1}]}>TEMP</Text>
-                    <Text style={[localStyles.th, {flex:1, textAlign:'right'}]}>SPEED</Text>
+                    <Text style={[localStyles.th, {flex:1}]}>DISTANCE</Text>
+                    <Text style={[localStyles.th, {flex:1}]}>DURATION</Text>
+                    <Text style={[localStyles.th, {flex:1, textAlign:'right'}]}>MAX SPEED</Text>
                 </View>
 
                 {todaysTrials.map((trial, index) => (
                     <View key={index} style={localStyles.tableRow}>
-                        <Text style={[localStyles.td, {flex:0.5, fontWeight:'bold'}]}>{trial.trialNumber}</Text>
-                        <Text style={[localStyles.td, {flex:1}]}>{trial.windSpeed} km/h</Text>
-                        <Text style={[localStyles.td, {flex:1}]}>{trial.temp}°C</Text>
+                        <Text style={[localStyles.td, {flex:0.5, fontFamily: FONTS.montserratBold}]}>{index + 1}</Text>
+                        <Text style={[localStyles.td, {flex:1}]}>{trial.totalDistance || 0}m</Text>
+                        <Text style={[localStyles.td, {flex:1}]}>{trial.duration ? (trial.duration * 60).toFixed(1) : '--'}s</Text>
                         <Text style={[localStyles.td, {flex:1, textAlign:'right', fontFamily: FONTS.orbitronBold, color: COLORS.charcoal}]}>
-                            {trial.topSpeed}
+                            {trial.performanceMetrics?.maxSpeed?.toFixed(1) || '--'}
                         </Text>
                     </View>
                 ))}
@@ -305,6 +396,25 @@ const localStyles = StyleSheet.create({
   },
   sectionTitle: {
     fontFamily: FONTS.montserratBold, color: COLORS.charcoal, fontSize: 14, marginBottom: 10, opacity: 0.7
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  resetButton: {
+    backgroundColor: COLORS.terracotta + '20',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: COLORS.terracotta,
+  },
+  resetButtonText: {
+    color: COLORS.terracotta,
+    fontFamily: FONTS.montserratBold,
+    fontSize: 12,
   },
   
   // Cards

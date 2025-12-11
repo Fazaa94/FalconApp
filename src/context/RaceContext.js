@@ -26,10 +26,17 @@ const initialState = {
 };
 
 const raceReducer = (state, action) => {
-  switch (action.type) {
+  // Wrap entire reducer in try-catch to prevent crashes from malformed data
+  try {
+    if (!action || !action.type) {
+      console.warn('⚠️ Invalid action received:', action);
+      return state;
+    }
+    
+    switch (action.type) {
     case 'PROCESS_NODE_MSG': {
       // Handles node_msg with nested camera_msg payload
-      const { src, payload, ts_iso } = action.payload;
+      const { src, payload, ts_iso } = action.payload || {};
       let inner = null;
       try {
         inner = typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -50,7 +57,7 @@ const raceReducer = (state, action) => {
         };
         return {
           ...state,
-          detections: [checkpoint, ...state.detections],
+          detections: [checkpoint, ...(state.detections || [])],
           currentRace: state.currentRace
             ? {
                 ...state.currentRace,
@@ -65,16 +72,16 @@ const raceReducer = (state, action) => {
     case 'ADD_MESSAGE':
       return {
         ...state,
-        messages: [action.payload, ...state.messages].slice(0, 200), // Keep last 200
+        messages: [action.payload, ...(state.messages || [])].slice(0, 200), // Keep last 200
       };
 
     case 'SET_STATUS':
       return {
         ...state,
         status: {
-          ...state.status,
-          ...action.payload,
-          ts_received: action.payload.ts_received || Date.now(),
+          ...(state.status || {}),
+          ...(action.payload || {}),
+          ts_received: action.payload?.ts_received || Date.now(),
         },
       };
 
@@ -196,6 +203,11 @@ const raceReducer = (state, action) => {
 
     default:
       return state;
+    }
+  } catch (error) {
+    console.error('🔴 Reducer error:', error?.message || error, 'Action:', action?.type);
+    // Return current state instead of crashing
+    return state;
   }
 };
 

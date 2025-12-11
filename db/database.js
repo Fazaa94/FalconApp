@@ -546,8 +546,9 @@ const realm = new Realm({
     PerformanceTrend,
     UserSession,
   ],
-  schemaVersion: 8,
+  schemaVersion: 10,
   migration: (oldRealm, newRealm) => {
+    // Migration from versions 8-9 to 10
     if (oldRealm.schemaVersion < 8) {
       // Add falconId to TrainingSession objects if missing
       const oldObjects = oldRealm.objects('TrainingSession');
@@ -557,6 +558,10 @@ const realm = new Realm({
           newObjects[i].falconId = '';
         }
       }
+    }
+    if (oldRealm.schemaVersion < 10) {
+      // Handle migrations for versions 8-9 if needed
+      // Currently no specific changes required
     }
   },
 });

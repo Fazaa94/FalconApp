@@ -25,10 +25,10 @@ const IoTSystemScreen = () => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'ready': return COLORS.successGreen;
-      case 'weak': return COLORS.warningYellow;
-      case 'offline': return COLORS.errorRed;
-      default: return COLORS.offlineGray;
+      case 'ready': return COLORS.oasisGreen;
+      case 'weak': return COLORS.sunYellow;
+      case 'offline': return COLORS.terracotta;
+      default: return COLORS.charcoal;
     }
   };
 
@@ -114,15 +114,15 @@ const IoTSystemScreen = () => {
       <Text style={localStyles.sectionTitle}>GPS STATUS</Text>
       <View style={localStyles.statusLegend}>
         <View style={localStyles.legendItem}>
-          <View style={[localStyles.legendDot, { backgroundColor: COLORS.successGreen }]} />
+          <View style={[localStyles.legendDot, { backgroundColor: COLORS.oasisGreen }]} />
           <Text style={localStyles.legendText}>READY</Text>
         </View>
         <View style={localStyles.legendItem}>
-          <View style={[localStyles.legendDot, { backgroundColor: COLORS.warningYellow }]} />
+          <View style={[localStyles.legendDot, { backgroundColor: COLORS.sunYellow }]} />
           <Text style={localStyles.legendText}>WEAK SIGNAL</Text>
         </View>
         <View style={localStyles.legendItem}>
-          <View style={[localStyles.legendDot, { backgroundColor: COLORS.errorRed }]} />
+          <View style={[localStyles.legendDot, { backgroundColor: COLORS.terracotta }]} />
           <Text style={localStyles.legendText}>NO RESPONSE</Text>
         </View>
       </View>
@@ -256,13 +256,13 @@ const modernStyles = StyleSheet.create({
     backgroundColor: COLORS.cobaltBlue,
   },
   weakButton: {
-    backgroundColor: COLORS.warningYellow,
+    backgroundColor: COLORS.sunYellow,
   },
   restartButton: {
     backgroundColor: COLORS.terracotta,
   },
   noResponseButton: {
-    backgroundColor: COLORS.errorRed,
+    backgroundColor: COLORS.terracotta,
   },
   quickButtonText: {
     fontFamily: FONTS.montserratBold,
@@ -300,7 +300,7 @@ const localStyles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 16,
     borderLeftWidth: 4,
-    borderLeftColor: COLORS.successGreen,
+    borderLeftColor: COLORS.oasisGreen,
   },
   statusCardTitle: {
     fontFamily: FONTS.montserratBold,
@@ -317,13 +317,13 @@ const localStyles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: COLORS.successGreen,
+    backgroundColor: COLORS.oasisGreen,
     marginRight: 8,
   },
   onlineText: {
     fontFamily: FONTS.montserratBold,
     fontSize: 16,
-    color: COLORS.successGreen,
+    color: COLORS.oasisGreen,
   },
   statusDescription: {
     fontFamily: FONTS.montserratRegular,
@@ -510,19 +510,19 @@ const localStyles = StyleSheet.create({
     alignItems: 'center',
   },
   readyButton: {
-    backgroundColor: COLORS.successGreen,
+    backgroundColor: COLORS.oasisGreen,
   },
   approvedButton: {
     backgroundColor: COLORS.oasisGreen,
   },
   weakButton: {
-    backgroundColor: COLORS.warningYellow,
+    backgroundColor: COLORS.sunYellow,
   },
   restartButton: {
     backgroundColor: COLORS.terracotta,
   },
   noResponseButton: {
-    backgroundColor: COLORS.errorRed,
+    backgroundColor: COLORS.terracotta,
   },
   quickButtonText: {
     fontFamily: FONTS.montserratBold,

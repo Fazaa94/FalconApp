@@ -18,6 +18,7 @@ import RaceControlScreen from './racecontrol';
 import TrainingControl from './TrainingControlScreen';
 import Animals from './RegisteredAnimals';
 import MessagesScreen from './MessagesScreen';
+import RaceAnalyticsScreen from './RaceAnalyticsScreen';
 import realm from '../db/database';
 
 const Drawer = createDrawerNavigator();
@@ -31,6 +32,7 @@ function CustomDrawerContent(props) {
     { name: 'Registration', icon: 'user-plus' },
     { name: 'Registered Falcons', icon: 'paw'},
     { name: 'Race Control', icon: 'flag-checkered' },
+    { name: 'Race Analytics', icon: 'chart-line' },
     { name: 'Training Control', icon: 'dumbbell' },
     { name: 'Messages', icon: 'envelope' },
   ];
@@ -147,6 +149,7 @@ export default function AppNavigator() {
         <Drawer.Screen name="Registration" component={RegistrationScreen} />
         <Drawer.Screen name="Registered Falcons" component={Animals} />
         <Drawer.Screen name="Race Control" component={RaceControlScreen} />
+        <Drawer.Screen name="Race Analytics" component={RaceAnalyticsScreen} />
         <Drawer.Screen name="Training Control" component={TrainingControl} />
         <Drawer.Screen name="Messages" component={MessagesScreen} />
       </Drawer.Navigator>
